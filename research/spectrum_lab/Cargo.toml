@@ -1,0 +1,16 @@
+[package]
+name = "spectrum_lab"
+version = "0.1.0"
+edition = "2021"
+
+# P68/ standalone research crate: std-only (внешних зависимостей нет —
+# собирается отдельно от основного крейта; см. README P33 о памяти rustc).
+
+[[bin]]
+name = "spectrum_lab"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
+lto = false
+codegen-units = 16

@@ -1,0 +1,43 @@
+{
+ "n": 524,
+ "wr": 24.61832061068702,
+ "total_r": -157.8198651961198,
+ "pf": 0.6564102697297934,
+ "maxdd": 172.11628678021026,
+ "be_wr": 43.66734295753606,
+ "ci_lo": -224.53715818630582,
+ "ci_hi": -91.20017080958665,
+ "sharpe": -0.1605067786940433,
+ "trades_per_day": 0.6469135802469136,
+ "days": 810.0,
+ "cost_r": 0.16275386028620972,
+ "avg_sl_pct": 0.7987521756558609,
+ "meta": {
+  "data": "TAOUSDT-1h-full.csv",
+  "bars": 22526,
+  "fee": 0.0005,
+  "spread": 0.0002,
+  "funding": 0.0001,
+  "train": 2160,
+  "test": 720,
+  "step": 720,
+  "warm": 250,
+  "seed": 42,
+  "params": {
+   "lookback": 12,
+   "atr_period": 14,
+   "ofi_window": 3,
+   "min_atr": 0.2,
+   "ofi": 0.04,
+   "vol_anom": 1.0,
+   "tp_atr_mult": 2.5,
+   "min_tp": 0.015,
+   "rr": 2.5,
+   "max_per_day": 5,
+   "regime_win": 24,
+   "regime_vol": 8.0,
+   "regime_trend": 1.0,
+   "min_net_rr": 1.2
+  }
+ }
+}

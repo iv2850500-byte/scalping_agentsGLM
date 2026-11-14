@@ -1,0 +1,89 @@
+# prometheus/alerts.yml
+# Правила алертов для скрипт-бота.
+# Загружается в Prometheus через rule_files.
+# Отправка алертов — через Alertmanager (Telegram, Slack, email).
+
+groups:
+  - name: scalping_bot_ws_health
+    interval: 30s
+    rules:
+      # ==== ALERT: parse rate < 95% ====
+      - alert: WSParseRateLow
+        expr: |
+          (ws_parse_rate < 0.95)
+          and
+          (ws_messages_received_total > 100)
+        for: 2m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "WS parse rate низкий: {{ $value | humanizePercentage }}"
+          description: "Парсер WebSocket теряет >5% сообщений. Проверь src/websocket/mod.rs::parse_message"
+
+      # ==== ALERT: WS тишина > 20 сек ====
+      - alert: WSSilence
+        expr: ws_silence_seconds > 20
+        for: 30s
+        labels:
+          severity: critical
+          component: websocket
+        annotations:
+          summary: "WebSocket молчит {{ $value }} сек"
+          description: "Бот не получает данных от Binance — возможно блокировка IP или сбой биржи"
+
+      # ==== ALERT: WS часто переподключается ====
+      - alert: WSReconnectStorm
+        expr: rate(ws_reconnects_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "WS переподключается слишком часто"
+          description: "{{ $value | humanize }} переподключений/сек — нестабильная связь"
+
+      # ==== ALERT: Высокая латентность ====
+      - alert: WSHighLatency
+        expr: |
+          histogram_quantile(0.95, rate(ws_latency_ms_bucket[5m])) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: latency
+        annotations:
+          summary: "P95 латентность WS > 1 сек"
+          description: "Высокий ping до Binance — риск slippage"
+
+      # ==== ALERT: Bot не активен ====
+      - alert: BotInactive
+        expr: bot_active == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: bot
+        annotations:
+          summary: "Бот {{ $labels.bot }} неактивен"
+          description: "Бот упал или завис — проверь логи"
+
+      # ==== ALERT: Ошибки сыпятся ====
+      - alert: HighErrorRate
+        expr: rate(bot_errors_total[5m]) > 0.2
+        for: 2m
+        labels:
+          severity: warning
+          component: bot
+        annotations:
+          summary: "Много ошибок: {{ $value | humanize }}/сек"
+          description: "Бот {{ $labels.bot }} генерирует много ошибок"
+
+      # ==== ALERT: Просадка > 5% ====
+      - alert: HighDrawdown
+        expr: bot_max_drawdown > 5
+        for: 1m
+        labels:
+          severity: critical
+          component: risk
+        annotations:
+          summary: "Просадка {{ $value }}% у {{ $labels.bot }}"
+          description: "Circuit breaker должен сработать"

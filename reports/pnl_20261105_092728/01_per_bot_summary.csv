@@ -1,0 +1,7 @@
+source,bot_name,trades,wins,losses,winrate_pct,gross_profit,gross_loss,profit_factor,net_pnl,expectancy,best_trade,worst_trade,first_trade,last_trade,suspended
+risk_stats,btc_bounce,0,0,0,,0.0,0.0,,0.0,,,,"",2026-11-05,0
+risk_stats,gold_asian,0,0,0,,0.0,0.0,,0.0,,,,"",2026-10-22,0
+risk_stats,gold_dca,0,0,0,,0.0,0.0,,0.0,,,,"",2026-11-05,0
+risk_stats,inj_liquidity,0,0,0,,0.0,0.0,,0.0,,,,"",2026-11-05,0
+risk_stats,tao_momentum,0,0,0,,0.0,0.0,,0.0,,,,"",2026-11-05,0
+journal,pepe_spread,7,0,7,0.0,0.0,1.1292,0.0,-1.1292,-0.1613,-0.1214,-0.2852,2026-10-14,2026-10-14,0

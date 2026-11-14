@@ -1,0 +1,10 @@
+{
+  "runs": [
+{"hypothesis":"H1_range_fade","data":"../p33_build/P33/data/TAOUSDT-1h-450d.csv","verdict":"FAIL","wf":{"folds":10,"folds_pos":4,"n":58,"r":2.2867,"wr":0.4828,"pf":1.0762},"oos":{"n":42,"r":-10.2644,"wr":0.3571,"pf":0.6198,"dd":12.5149,"stress_r_x2":-12.9565}},
+{"hypothesis":"H1_range_fade","data":"../p33_build/P33/data/ETHUSDT-1h-full.csv","verdict":"FAIL","wf":{"folds":10,"folds_pos":1,"n":148,"r":-26.3039,"wr":0.4054,"pf":0.7011},"oos":{"n":92,"r":-15.4253,"wr":0.4130,"pf":0.7143,"dd":15.6184,"stress_r_x2":-24.3170}},
+{"hypothesis":"H1_range_fade","data":"../p33_build/P33/data/BTCUSDT-1h-full.csv","verdict":"FAIL","wf":{"folds":10,"folds_pos":1,"n":214,"r":-40.6331,"wr":0.4065,"pf":0.6784},"oos":{"n":96,"r":-14.1637,"wr":0.4375,"pf":0.7344,"dd":22.7397,"stress_r_x2":-25.7190}},
+{"hypothesis":"H2_donchian_breakout","data":"../p33_build/P33/data/TAOUSDT-1h-450d.csv","verdict":"FAIL","wf":{"folds":10,"folds_pos":4,"n":144,"r":-2.4924,"wr":0.3542,"pf":0.9732},"oos":{"n":62,"r":-10.9580,"wr":0.2903,"pf":0.7481,"dd":18.2459,"stress_r_x2":-13.9852}},
+{"hypothesis":"H2_donchian_breakout","data":"../p33_build/P33/data/ETHUSDT-1h-full.csv","verdict":"FAIL","wf":{"folds":10,"folds_pos":3,"n":155,"r":-8.1809,"wr":0.3484,"pf":0.9184},"oos":{"n":67,"r":-4.2669,"wr":0.3433,"pf":0.9013,"dd":15.1464,"stress_r_x2":-9.9982}},
+{"hypothesis":"H2_donchian_breakout","data":"../p33_build/P33/data/BTCUSDT-1h-full.csv","verdict":"FAIL","wf":{"folds":10,"folds_pos":4,"n":149,"r":-3.0937,"wr":0.3691,"pf":0.9669},"oos":{"n":113,"r":-9.6975,"wr":0.3540,"pf":0.8655,"dd":16.1219,"stress_r_x2":-22.0424}}
+  ]
+}

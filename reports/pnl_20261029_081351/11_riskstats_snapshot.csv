@@ -1,0 +1,7 @@
+bot_name,total_trades,win_trades,loss_trades,realized_pnl,gross_profit,gross_loss,daily_loss_today,last_active_day,suspended,suspend_reason
+btc_bounce,0,0,0,0.0,0.0,0.0,0.0,2026-10-29,0,""
+gold_asian,0,0,0,0.0,0.0,0.0,0.0,2026-10-22,0,""
+gold_dca,0,0,0,0.0,0.0,0.0,0.0,2026-10-29,0,""
+inj_liquidity,0,0,0,0.0,0.0,0.0,0.0,2026-10-29,0,""
+pepe_spread,7,0,7,-1.1291847929070955,0.0,1.1291847929070955,1.1291847929070955,2026-10-14,0,""
+tao_momentum,0,0,0,0.0,0.0,0.0,0.0,2026-10-29,0,""

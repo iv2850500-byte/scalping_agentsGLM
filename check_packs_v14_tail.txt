@@ -1,0 +1,24 @@
+
+# ============================================================
+# P66 block (appended by P66 pack) - threshold tuning toolkit:
+# env-ized WFA thresholds (MOM_ATR_MIN_PCT / MOM_OFI_MIN /
+# MOM_VOLUME_MIN) + threshold_grid bin (feature-gated, wfa) +
+# wfa_grid.ps1 runner. Live thresholds live in config.toml
+# (strategy.params). Markers: 'P66/' in src\**\*.rs + Cargo.toml.
+# Expected after install: 22.
+# ============================================================
+$p66Count = 0
+if (Test-Path "src") {
+    Get-ChildItem -Path "src" -Recurse -Filter "*.rs" | ForEach-Object {
+        $p66Count += ([regex]::Matches((Get-Content $_.FullName -Raw), [regex]::Escape("P66/"))).Count
+    }
+}
+if (Test-Path "Cargo.toml") {
+    $p66Count += ([regex]::Matches((Get-Content "Cargo.toml" -Raw), [regex]::Escape("P66/"))).Count
+}
+Write-Host ("[P66] markers: {0} (installed if 22)" -f $p66Count)
+if ($p66Count -ge 22) {
+    Write-Host "[P66] OK: installed"
+} else {
+    Write-Host "[P66] MISSING/INCOMPLETE (run install_p66.ps1)"
+}

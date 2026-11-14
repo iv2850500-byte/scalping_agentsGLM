@@ -1,0 +1,31 @@
+﻿2026-10-07T03:19:14.901920Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=24590 | вход=0.00410140 | тек=0.00410610 | Δ=+0.115% | 290с | SL=0.00409652 | TP=0.00590091 | PnL=+0.1156 | funding=+0.0000 | fees=0.0202 | R=+0.96
+2026-10-07T03:19:14.902558Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.1156 USDT
+2026-10-07T03:19:25.250021Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [pepe_spread] 1000PEPEUSDT | ЛОНГ 24590.00000 | вход=0.00410140 выход=0.00410660 | 300с
+2026-10-07T03:19:25.264735Z  INFO scalping_agents: 🔔 [pepe_spread] СДЕЛКА ЗАКРЫТА | результат=win | PnL=+0.0673 USDT
+2026-10-07T03:21:08.183854Z  INFO scalping_agents::strategies::spread_capture: 📊 [1000PEPEUSDT] спред 0.0024% < eff.min 0.2160% (ждём глубокого расширения)
+2026-10-07T03:24:22.679073Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T03:24:22.679734Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #111 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T03:24:52.682299Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:25:00.306144Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #112 (endpoint 0): WS handshake failed: IO error: Этот хост неизвестен. (os error 11001) | переподключение через 30 сек
+2026-10-07T03:25:30.311032Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:25:35.680365Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T03:30:37.401904Z  INFO scalping_agents::strategies::spread_capture: 📊 [1000PEPEUSDT] спред 0.0633% < eff.min 0.2160% (ждём глубокого расширения)
+2026-10-07T03:32:58.893428Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T03:32:58.894404Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #113 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T03:33:28.905347Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:33:30.580290Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T03:34:23.444406Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T03:34:23.445264Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #114 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T03:34:53.447419Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:34:58.769687Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T03:40:22.487341Z  INFO scalping_agents::strategies::spread_capture: 📊 [1000PEPEUSDT] спред 0.0073% < eff.min 0.2160% (ждём глубокого расширения)
+2026-10-07T03:42:19.197381Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T03:42:19.198111Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #115 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T03:42:49.211196Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:42:59.236020Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #116 (endpoint 0): WS handshake timeout (10s) | переподключение через 30 сек
+2026-10-07T03:43:29.237775Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:43:30.415374Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T03:44:23.811896Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T03:44:23.813028Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #117 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T03:44:53.816311Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T03:44:57.092599Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols

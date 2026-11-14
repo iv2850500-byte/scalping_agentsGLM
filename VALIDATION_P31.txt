@@ -1,0 +1,237 @@
+ВАЛИДАЦИЯ P31 (2026-11-06, собрано ассистентом)
+
+## Провенанс данных TAOUSDT
+Источник: data.binance.vision (data/futures/um, monthly + daily) + fapi-хвост.
+Сутки 2026-10-28 отсутствуют в архивах Binance — восстановлены через fapi (24 бара).
+Детерминированность: повторный прогон сборщика дал побайтово идентичные файлы.
+
+## Кросс-валидация Rust-порта (wfa_momentum.rs) независимым референсом
+[1] per_fold.csv 1:1: taofull (28 фолдов), tao450 (11), btc450 (11) — OK
+[2] oos_trades_production.csv 1:1 построчно: taofull rr2.0 — 159/159, tao450 rr2.0 — 76/76 — OK
+[3] summary.json метрики + bootstrap-CI 1:1 (MT19937 == CPython random.Random, seed 42) — OK
+Поймано при сверке: Python round() банкирское против Rust f64::round (от нуля);
+референс приведён к семантике живого движка (math.rs round_to_tick), после
+фикса расхождений 0. Порт подтверждён.
+
+## Эталонные прогоны (Rust 1.99.1, edition 2024, seed 42)
+run_taofull:      prod n=0 | плато rr2.0 n=159 R=-29.68 PF=0.76 | rr2.5 n=162 R=-51.86 PF=0.64
+run_tao450:       prod n=0 | rr2.0 n=76 R=-10.89 | rr2.5 n=80 R=-19.51
+run_tao450_stress: rr2.0 n=76 R=-13.17 | rr2.5 n=80 R=-22.51
+run_taofull_v8:   prod n=524 WR=24.6% R=-157.82 PF=0.66 CI [-224.54; -91.20]
+run_btc450:       rr2.0 n=74 R=-20.62 | rr2.5 n=76 R=-28.85
+run_eth450:       rr2.0 n=54 R=-19.02 | rr2.5 n=54 R=-24.27
+run_sol450:       rr2.0 n=56 R=-6.24 | rr2.5 n=57 R=+0.22
+
+Фильтр-воронка prod taofull (сумма по OOS): bars=20160 vol=12849 ofi=5784
+mom=210 roc=186 mfi=24 trend=240 regime=148 vspk=497 edge=222 passed=0.
+
+
+## Полный отчёт сборщика данных TAO
+==============================================================================
+BUILD REPORT: TAOUSDT 1h USDT-M futures candles (data-tao)
+==============================================================================
+generated_at_utc : 2026-11-06 05:24:56 
+now_ms           : 1793942665061 (2026-11-06 05:24:25 UTC)
+symbol/interval  : TAOUSDT 1h (futures USDT-M)
+
+SOURCES
+------------------------------------------------------------------------------
+1) data.binance.vision (primary)
+   monthly_ok=31, monthly_404=0, monthly_other_fail=0
+   daily_ok=4, daily_404=2, daily_other_fail=0 (incl. gap-fill days tried=1)
+   probe monthly 2024-01 -> HTTP 404 (no archive before first listing month)
+   probe monthly 2024-02 -> HTTP 404 (no archive before first listing month)
+   probe monthly 2024-03 -> HTTP 404 (no archive before first listing month)
+   FIRST available month with data = 2024-04 (first data bar open 2024-04-11 14:00 UTC, close 2024-04-11 14:59:59.999 UTC)
+2) fapi.binance.com REST tail: status=200, pages=1, klines_received=30, closed_bars_added=28, skipped_unclosed=2 (filter: close_time <= now_ms - 3600000; fapi requests use extended backoff [30, 60, 120, 240]s on transient 418/403 auto-ban)
+   fapi REST gap-fill (internal archive gaps): pages=1, klines_received=24, bars_added=24
+dedup: policy=later source wins; conflicts (same open_time, different values)=0, rows overwritten by later source=0
+rows dropped: invalid close_time (ct != open+3599999)=0, non-numeric time=0, unclosed=0, gap-fill rows added=0
+
+NOTE: task estimated ~13000 bars; actual full history runs from the first available archive bar (2024-04-11 14:00 UTC) to now, so the real count is larger. Per task instruction the FULL available history is kept.
+
+--- FILE: full (entire available history) ---
+path            : /home/z/my-project/work/fresh_data/TAOUSDT-1h-full.csv
+window start    : FULL available history (from first archive bar)
+data rows       : 22526
+expected approx : n/a (full history; task estimate was ~13000 bars, actual coverage depends on real listing date)
+first row       : 1712847599999,697.76,718.48,685.00,699.43,12346.691,6250.704
+  first open    : 2024-04-11 14:00:00 UTC | close: 2024-04-11 14:59:59 UTC
+last row        : 1793937599999,220.35,221.03,218.54,219.69,10525.201,4981.071
+  last open     : 2026-11-06 03:00:00 UTC | close: 2026-11-06 03:59:59 UTC
+close_time check: 0 violation(s) of close_time == open_time + 3599999
+monotonic/step  : gaps=0 (0.0000% of rows), duplicate-steps=0, duplicate close_time=0
+gap threshold   : OK (<= 0.5%)
+OHLC sanity     : 0 violation(s)
+continuity      : close[i] != open[i+1] on 15653/22525 boundaries (informational only, NOT an error: Binance kline open=first trade of bar, close=last trade of bar; BTC reference shows the same behavior)
+last close      : 219.69 (TAOUSDT price at data end, 2026-11-06 03:59:59 UTC)
+file size       : 1371869 bytes
+sha256          : 6c62aa2d04cf74348d43f4e0829e268e2d6aa3846ab988d060a278482576303c
+encoding/lines  : UTF-8=ok, CR present=NO
+
+--- FILE: 450d ---
+path            : /home/z/my-project/work/fresh_data/TAOUSDT-1h-450d.csv
+window start    : open_time >= 1755061200000 (2025-08-13 05:00:00 UTC)
+data rows       : 10799
+expected approx : 10800 (+/- 60) -> OK
+first row       : 1755064799999,392.00,393.76,388.04,389.02,10268.865,4086.862
+  first open    : 2025-08-13 05:00:00 UTC | close: 2025-08-13 05:59:59 UTC
+last row        : 1793937599999,220.35,221.03,218.54,219.69,10525.201,4981.071
+  last open     : 2026-11-06 03:00:00 UTC | close: 2026-11-06 03:59:59 UTC
+close_time check: 0 violation(s) of close_time == open_time + 3599999
+monotonic/step  : gaps=0 (0.0000% of rows), duplicate-steps=0, duplicate close_time=0
+gap threshold   : OK (<= 0.5%)
+OHLC sanity     : 0 violation(s)
+continuity      : close[i] != open[i+1] on 6317/10798 boundaries (informational only, NOT an error: Binance kline open=first trade of bar, close=last trade of bar; BTC reference shows the same behavior)
+last close      : 219.69 (TAOUSDT price at data end, 2026-11-06 03:59:59 UTC)
+file size       : 660864 bytes
+sha256          : 28c35e8dff2b929e099665b44c446b8c4fc16442212ce1b7ed2cfe6a047b5640
+encoding/lines  : UTF-8=ok, CR present=NO
+
+CROSS-VALIDATION vs BTCUSDT-1h-full.csv (close_time intersection)
+------------------------------------------------------------------------------
+--- CROSS-CHECK vs BTCUSDT-1h-full.csv (full (entire available history)) ---
+btc bars (reference file)    : 10766
+tao bars (full (entire available history))            : 22526
+common close_time rows       : 10766
+btc bars within tao range    : 10766 (2024-04-11 14:59:59 .. 2026-11-06 03:59:59 UTC)
+btc-in-range missing in tao  : 0
+close-price mismatches vs BTC: 10766 of 10766 common rows (equal prices: 0; ALL rows expected to differ: different assets)
+
+--- CROSS-CHECK vs BTCUSDT-1h-full.csv (450d) ---
+btc bars (reference file)    : 10766
+tao bars (450d)            : 10799
+common close_time rows       : 10747
+btc bars within tao range    : 10747 (2025-08-13 05:59:59 .. 2026-11-06 03:59:59 UTC)
+btc-in-range missing in tao  : 0
+close-price mismatches vs BTC: 10747 of 10747 common rows (equal prices: 0; ALL rows expected to differ: different assets)
+
+HTTP REQUEST LOG (url -> status)
+------------------------------------------------------------------------------
+ 404 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-01.zip  head final (no retry)
+ 404 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-02.zip  head final (no retry)
+ 404 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-03.zip  head final (no retry)
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-04.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-05.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-06.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-07.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-08.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-09.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-10.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-11.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2024-12.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-01.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-02.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-03.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-04.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-05.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-06.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-07.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-08.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-09.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-10.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-11.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2025-12.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-01.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-02.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-03.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-04.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-05.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-06.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-07.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-08.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-09.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/TAOUSDT/1h/TAOUSDT-1h-2026-10.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/TAOUSDT/1h/TAOUSDT-1h-2026-11-01.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/TAOUSDT/1h/TAOUSDT-1h-2026-11-02.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/TAOUSDT/1h/TAOUSDT-1h-2026-11-03.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/TAOUSDT/1h/TAOUSDT-1h-2026-11-04.zip  ok
+ 404 https://data.binance.vision/data/futures/um/daily/klines/TAOUSDT/1h/TAOUSDT-1h-2026-11-05.zip  final (no retry)
+ 200 https://fapi.binance.com/fapi/v1/klines?symbol=TAOUSDT&interval=1h&limit=1500&startTime=1793836800000  ok
+ 404 https://data.binance.vision/data/futures/um/daily/klines/TAOUSDT/1h/TAOUSDT-1h-2026-10-28.zip  final (no retry)
+ 200 https://fapi.binance.com/fapi/v1/klines?symbol=TAOUSDT&interval=1h&limit=1500&startTime=1793145600000&endTime=1793231999999  ok
+
+RUNTIME LOG
+------------------------------------------------------------------------------
+[2026-11-06 05:24:25.061Z] now_ms=1793942665061
+[2026-11-06 05:24:25.061Z] window 'full (entire available history)': FULL history (first available archive month 2024-04)
+[2026-11-06 05:24:25.061Z] window '450d': 450d -> start 1755061200000 (2025-08-13 05:00:00 UTC)
+[2026-11-06 05:24:25.061Z] last closed bar must satisfy close_time < now_ms=1793942665061 (2026-11-06 05:24:25 UTC); REST tail accepts close_time <= 1793939065061 (2026-11-06 04:24:25 UTC)
+[2026-11-06 05:24:25.141Z] probe monthly 2024-01 -> HTTP 404
+[2026-11-06 05:24:25.240Z] probe monthly 2024-02 -> HTTP 404
+[2026-11-06 05:24:25.331Z] probe monthly 2024-03 -> HTTP 404
+[2026-11-06 05:24:25.331Z] months to fetch (monthly archives): (2024, 4)..(2026, 10) (31 months)
+[2026-11-06 05:24:25.331Z] GET monthly 2024-04 ...
+[2026-11-06 05:24:26.283Z]   +466 rows from month-2024-04 (total unique 466)
+[2026-11-06 05:24:26.283Z] GET monthly 2024-05 ...
+[2026-11-06 05:24:27.308Z]   +744 rows from month-2024-05 (total unique 1210)
+[2026-11-06 05:24:27.308Z] GET monthly 2024-06 ...
+[2026-11-06 05:24:27.927Z]   +720 rows from month-2024-06 (total unique 1930)
+[2026-11-06 05:24:27.927Z] GET monthly 2024-07 ...
+[2026-11-06 05:24:28.838Z]   +744 rows from month-2024-07 (total unique 2674)
+[2026-11-06 05:24:28.838Z] GET monthly 2024-08 ...
+[2026-11-06 05:24:29.430Z]   +744 rows from month-2024-08 (total unique 3418)
+[2026-11-06 05:24:29.430Z] GET monthly 2024-09 ...
+[2026-11-06 05:24:30.357Z]   +720 rows from month-2024-09 (total unique 4138)
+[2026-11-06 05:24:30.357Z] GET monthly 2024-10 ...
+[2026-11-06 05:24:31.415Z]   +744 rows from month-2024-10 (total unique 4882)
+[2026-11-06 05:24:31.415Z] GET monthly 2024-11 ...
+[2026-11-06 05:24:32.034Z]   +720 rows from month-2024-11 (total unique 5602)
+[2026-11-06 05:24:32.034Z] GET monthly 2024-12 ...
+[2026-11-06 05:24:33.076Z]   +744 rows from month-2024-12 (total unique 6346)
+[2026-11-06 05:24:33.076Z] GET monthly 2025-01 ...
+[2026-11-06 05:24:33.881Z]   +744 rows from month-2025-01 (total unique 7090)
+[2026-11-06 05:24:33.881Z] GET monthly 2025-02 ...
+[2026-11-06 05:24:34.777Z]   +672 rows from month-2025-02 (total unique 7762)
+[2026-11-06 05:24:34.777Z] GET monthly 2025-03 ...
+[2026-11-06 05:24:35.559Z]   +744 rows from month-2025-03 (total unique 8506)
+[2026-11-06 05:24:35.559Z] GET monthly 2025-04 ...
+[2026-11-06 05:24:36.406Z]   +720 rows from month-2025-04 (total unique 9226)
+[2026-11-06 05:24:36.407Z] GET monthly 2025-05 ...
+[2026-11-06 05:24:36.996Z]   +744 rows from month-2025-05 (total unique 9970)
+[2026-11-06 05:24:36.996Z] GET monthly 2025-06 ...
+[2026-11-06 05:24:37.530Z]   +720 rows from month-2025-06 (total unique 10690)
+[2026-11-06 05:24:37.530Z] GET monthly 2025-07 ...
+[2026-11-06 05:24:38.181Z]   +744 rows from month-2025-07 (total unique 11434)
+[2026-11-06 05:24:38.181Z] GET monthly 2025-08 ...
+[2026-11-06 05:24:39.225Z]   +744 rows from month-2025-08 (total unique 12178)
+[2026-11-06 05:24:39.225Z] GET monthly 2025-09 ...
+[2026-11-06 05:24:40.222Z]   +720 rows from month-2025-09 (total unique 12898)
+[2026-11-06 05:24:40.222Z] GET monthly 2025-10 ...
+[2026-11-06 05:24:41.070Z]   +744 rows from month-2025-10 (total unique 13642)
+[2026-11-06 05:24:41.070Z] GET monthly 2025-11 ...
+[2026-11-06 05:24:41.904Z]   +720 rows from month-2025-11 (total unique 14362)
+[2026-11-06 05:24:41.904Z] GET monthly 2025-12 ...
+[2026-11-06 05:24:42.861Z]   +744 rows from month-2025-12 (total unique 15106)
+[2026-11-06 05:24:42.862Z] GET monthly 2026-01 ...
+[2026-11-06 05:24:43.737Z]   +744 rows from month-2026-01 (total unique 15850)
+[2026-11-06 05:24:43.737Z] GET monthly 2026-02 ...
+[2026-11-06 05:24:44.831Z]   +672 rows from month-2026-02 (total unique 16522)
+[2026-11-06 05:24:44.831Z] GET monthly 2026-03 ...
+[2026-11-06 05:24:45.812Z]   +744 rows from month-2026-03 (total unique 17266)
+[2026-11-06 05:24:45.812Z] GET monthly 2026-04 ...
+[2026-11-06 05:24:46.584Z]   +720 rows from month-2026-04 (total unique 17986)
+[2026-11-06 05:24:46.584Z] GET monthly 2026-05 ...
+[2026-11-06 05:24:47.708Z]   +744 rows from month-2026-05 (total unique 18730)
+[2026-11-06 05:24:47.708Z] GET monthly 2026-06 ...
+[2026-11-06 05:24:48.796Z]   +720 rows from month-2026-06 (total unique 19450)
+[2026-11-06 05:24:48.796Z] GET monthly 2026-07 ...
+[2026-11-06 05:24:49.494Z]   +744 rows from month-2026-07 (total unique 20194)
+[2026-11-06 05:24:49.494Z] GET monthly 2026-08 ...
+[2026-11-06 05:24:50.501Z]   +744 rows from month-2026-08 (total unique 20938)
+[2026-11-06 05:24:50.502Z] GET monthly 2026-09 ...
+[2026-11-06 05:24:51.078Z]   +720 rows from month-2026-09 (total unique 21658)
+[2026-11-06 05:24:51.078Z] GET monthly 2026-10 ...
+[2026-11-06 05:24:51.861Z]   +720 rows from month-2026-10 (total unique 22378)
+[2026-11-06 05:24:51.861Z] partial month 2026-11: daily archives for days 01..05
+[2026-11-06 05:24:54.754Z]   daily 2026-11-05 -> 404 (skipped)
+[2026-11-06 05:24:54.755Z]   +96 rows from dailies-2026-11 (total unique 22474)
+[2026-11-06 05:24:54.755Z] REST tail: fapi TAOUSDT 1h limit=1500 startTime=1793836800000 (2026-11-05 00:00:00 UTC); accept close_time <= 1793939065061 (2026-11-06 04:24:25 UTC)
+[2026-11-06 05:24:54.832Z]   +28 rows from rest-tail-page1 (total unique 22502)
+[2026-11-06 05:24:54.832Z]   REST page 1: 30 < 1500 klines -> tail complete
+[2026-11-06 05:24:54.837Z] gap-fill: 24 missing bar(s) across 1 day(s): ['2026-10-28']
+[2026-11-06 05:24:54.923Z]   gap-fill daily 2026-10-28 -> 404
+[2026-11-06 05:24:54.928Z] REST gap-fill: 24 missing bar(s) in 1 range(s): 2026-10-28 00:00:00..2026-10-28 23:00:00
+[2026-11-06 05:24:56.001Z]   +24 rows from rest-gapfill-2026-10-28_00:00:00 (total unique 22526)
+[2026-11-06 05:24:56.005Z] dropped 0 unclosed bar(s); final unique closed bars: 22526
+[2026-11-06 05:24:56.012Z] BTC reference loaded: 10766 bars from /home/z/my-project/work/fresh_data/BTCUSDT-1h-full.csv

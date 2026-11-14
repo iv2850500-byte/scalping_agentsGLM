@@ -1,0 +1,96 @@
+﻿===== ФАЙЛ: bot.log.2026-09-28 | строк в последней сессии: 577 =====
+
+----- 1. СТАРТ (первые 40 строк) -----
+2026-09-28T09:28:13.701295Z  INFO scalping_agents: 🚀 Скальпинг-бот v0.2.0 (isolated SpreadCapture)
+2026-09-28T09:28:13.703980Z  INFO scalping_agents: ✅ Конфигурация загружена | ботов: 4
+2026-09-28T09:28:13.704530Z  INFO scalping_agents::exchange: [sol_momentum] Создаю клиент | market=FUTURES | rest_url=https://fapi.binance.com
+2026-09-28T09:28:22.143196Z  INFO scalping_agents::exchange::binance_futures: ⏰ Futures clock offset: -126 ms
+2026-09-28T09:28:22.144937Z  INFO scalping_agents::exchange::symbol_filters: 📊 Загружаю фильтры: https://testnet.binance.vision/api/v3/exchangeInfo (символов: 1)
+2026-09-28T09:28:23.833814Z  INFO scalping_agents::exchange::symbol_filters: ✅ Фильтры загружены: 1 символов
+2026-09-28T09:28:23.834410Z  INFO scalping_agents::exchange::symbol_filters: 📊 Загружаю фильтры: https://fapi.binance.com/fapi/v1/exchangeInfo (символов: 3)
+2026-09-28T09:28:28.582589Z  INFO scalping_agents::exchange::symbol_filters: ✅ Фильтры загружены: 3 символов
+2026-09-28T09:28:28.583400Z  INFO scalping_agents::websocket: 📡 WebSocket Hub | SPOT | btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@kline_1m
+2026-09-28T09:28:28.584700Z  INFO scalping_agents::websocket:    [0] wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@kline_1m
+2026-09-28T09:28:28.585193Z  INFO scalping_agents::websocket:    [1] wss://stream.binance.com:443/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@kline_1m
+2026-09-28T09:28:28.585621Z  INFO scalping_agents::websocket:    [2] wss://data-stream.binance.vision/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@kline_1m
+2026-09-28T09:28:28.586638Z  INFO scalping_agents: 📡 [COMMON] WebSocket Hub для BTCUSDT (spot) запущен
+2026-09-28T09:28:28.587033Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@kline_1m
+2026-09-28T09:28:28.587399Z  INFO scalping_agents::websocket: 📡 WebSocket Hub | FUTURES | solusdt@bookTicker
+2026-09-28T09:28:28.588501Z  INFO scalping_agents::websocket:    [0] wss://fstream.binance.com/stream?streams=solusdt@bookTicker
+2026-09-28T09:28:28.589596Z  INFO scalping_agents: 📡 [ISOLATED] WebSocket Hub для SOLUSDT (futures) запущен
+2026-09-28T09:28:28.590096Z  INFO scalping_agents::websocket: Подключаюсь к wss://fstream.binance.com/stream?streams=solusdt@bookTicker
+2026-09-28T09:28:28.591276Z  INFO scalping_agents::websocket: 📡 WebSocket Hub | FUTURES | dogeusdt@bookTicker
+2026-09-28T09:28:28.592908Z  INFO scalping_agents::websocket:    [0] wss://fstream.binance.com/stream?streams=dogeusdt@bookTicker
+2026-09-28T09:28:28.593473Z  INFO scalping_agents: 📡 [ISOLATED] WebSocket Hub для DOGEUSDT (futures) запущен
+2026-09-28T09:28:28.593753Z  INFO scalping_agents::websocket: 📡 WebSocket Hub | FUTURES | 1000pepeusdt@bookTicker
+2026-09-28T09:28:28.597807Z  INFO scalping_agents::websocket: Подключаюсь к wss://fstream.binance.com/stream?streams=dogeusdt@bookTicker
+2026-09-28T09:28:28.598653Z  INFO scalping_agents::websocket:    [0] wss://fstream.binance.com/stream?streams=1000pepeusdt@bookTicker
+2026-09-28T09:28:28.599917Z  INFO scalping_agents: 📡 [ISOLATED] WebSocket Hub для 1000PEPEUSDT (futures) запущен
+2026-09-28T09:28:28.601219Z  INFO scalping_agents: 📊 Метрики: http://localhost:9090/metrics
+2026-09-28T09:28:28.601794Z  INFO scalping_agents: [sol_momentum] Символ: SOLUSDT | Hub: sol_momentum:SOLUSDT | Изолирован: true
+2026-09-28T09:28:28.602472Z  INFO scalping_agents::metrics: Metrics server on 0.0.0.0:9090
+2026-09-28T09:28:28.602971Z  INFO scalping_agents::websocket: Подключаюсь к wss://fstream.binance.com/stream?streams=1000pepeusdt@bookTicker
+2026-09-28T09:28:28.603722Z  INFO scalping_agents: [doge_momentum] Символ: DOGEUSDT | Hub: doge_momentum:DOGEUSDT | Изолирован: true
+2026-09-28T09:28:28.604280Z  INFO scalping_agents::exchange: [sol_momentum] Создаю клиент | market=FUTURES | rest_url=https://fapi.binance.com
+2026-09-28T09:28:28.605199Z  INFO scalping_agents: [pepe_spread] Символ: 1000PEPEUSDT | Hub: pepe_spread:1000PEPEUSDT | Изолирован: true
+2026-09-28T09:28:28.605840Z  INFO scalping_agents::exchange: [pepe_spread] Создаю клиент | market=FUTURES | rest_url=https://fapi.binance.com
+2026-09-28T09:28:28.606332Z  INFO scalping_agents: [sol_momentum] 📈 kline-поллер запущен (REST, 3с)
+2026-09-28T09:28:28.606732Z  INFO scalping_agents: [smoke_momentum] Символ: BTCUSDT | Hub: common:BTCUSDT | Изолирован: false
+2026-09-28T09:28:28.607663Z  INFO scalping_agents::exchange: [doge_momentum] Создаю клиент | market=FUTURES | rest_url=https://fapi.binance.com
+2026-09-28T09:28:28.608922Z  INFO scalping_agents: [pepe_spread] 📈 kline-поллер запущен (REST, 3с)
+2026-09-28T09:28:28.616889Z  INFO scalping_agents::exchange: [smoke_momentum] Создаю клиент | market=SPOT | rest_url=https://testnet.binance.vision
+2026-09-28T09:28:28.617853Z  INFO scalping_agents: [doge_momentum] 📈 kline-поллер запущен (REST, 3с)
+2026-09-28T09:28:28.634920Z  INFO scalping_agents::state::state_manager: [smoke_momentum] 💸 Fee rate: 0.00075 (0.075%) на сторону — round-trip 0.150%
+
+----- 2. СОБЫТИЯ: сигналы / входы / выходы / ошибки -----
+2026-09-28T09:50:00.736609Z  INFO scalping_agents::execution::execution_engine: ✅ ВХОД ИСПОЛНЕН [smoke_momentum] BUY 0.05370 BTCUSDT @ 82756.74000000 (сигнал 82752.34000000) | fee≈0.0750% | id=7250399
+2026-09-28T09:50:00.762395Z  INFO scalping_agents: [smoke_momentum] ✅ ВХОД: BUY 0.05370 @ 82752.340000
+2026-09-28T09:50:28.658150Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82767.86 | Δ=+0.013% | возраст=27с | SL=82659.24 | TP=82985.08 | PnL=+0.5969 | funding=+0.0000 USDT
+2026-09-28T09:50:58.657950Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82780.00 | Δ=+0.028% | возраст=57с | SL=82659.24 | TP=82985.08 | PnL=+1.2491 | funding=+0.0000 USDT
+2026-09-28T09:51:28.658339Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82740.04 | Δ=-0.020% | возраст=87с | SL=82659.24 | TP=82985.08 | PnL=-0.8971 | funding=+0.0000 USDT
+2026-09-28T09:51:58.659156Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82745.11 | Δ=-0.014% | возраст=117с | SL=82659.24 | TP=82985.08 | PnL=-0.6243 | funding=+0.0000 USDT
+2026-09-28T09:52:04.543816Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [smoke_momentum] BTCUSDT | ЛОНГ 0.05370 | вход=82756.74 выход=82745.11 | удержание=123с
+2026-09-28T09:52:04.569298Z  INFO scalping_agents: 🔔 [smoke_momentum] СДЕЛКА ЗАКРЫТА | результат=loss | PnL=-7.2901 USDT
+2026-09-28T10:00:06.720081Z  INFO scalping_agents: [smoke_momentum] 📊 ФИНАЛ СЕССИИ | WR=0.0% | PF=0.00 | trades=1 | realized_pnl=-7.2901 | suspended=нет
+2026-09-28T10:00:06.720470Z  INFO scalping_agents: [pepe_spread] 📊 ФИНАЛ СЕССИИ | WR=0.0% | PF=0.00 | trades=0 | realized_pnl=+0.0000 | suspended=нет
+2026-09-28T10:00:06.720937Z  INFO scalping_agents: [sol_momentum] 📊 ФИНАЛ СЕССИИ | WR=0.0% | PF=0.00 | trades=0 | realized_pnl=+0.0000 | suspended=нет
+2026-09-28T10:00:06.722007Z  INFO scalping_agents: [doge_momentum] 📊 ФИНАЛ СЕССИИ | WR=0.0% | PF=0.00 | trades=0 | realized_pnl=+0.0000 | suspended=нет
+
+----- 3. SMOKE diag (первые 4 + последние 14; всего 63) -----
+2026-09-28T09:28:58.646940Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=0 total=0 | vol=0 atr=0 mom=0 ofi=0 regime=0 time=0 lim=0 cd=0 rr=0 passed=0 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.000% last_atr=0.0000 trades=0/10
+2026-09-28T09:29:28.646748Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=1 total=0 | vol=0 atr=0 mom=0 ofi=0 regime=0 time=0 lim=0 cd=0 rr=0 passed=0 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.000% last_atr=0.0000 trades=0/10
+2026-09-28T09:29:58.647155Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=1 total=0 | vol=0 atr=0 mom=0 ofi=0 regime=0 time=0 lim=0 cd=0 rr=0 passed=0 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.000% last_atr=0.0000 trades=0/10
+2026-09-28T09:30:28.647923Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=2 total=0 | vol=0 atr=0 mom=0 ofi=0 regime=0 time=0 lim=0 cd=0 rr=0 passed=0 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.029% last_atr=30.0100 trades=0/10
+2026-09-28T09:53:28.660228Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=25 total=14 | vol=10 atr=0 mom=1 ofi=0 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.298% last_atr=34.5382 trades=1/10
+2026-09-28T09:53:58.660026Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=25 total=14 | vol=10 atr=0 mom=1 ofi=0 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.298% last_atr=34.5382 trades=1/10
+2026-09-28T09:54:28.660825Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=26 total=15 | vol=11 atr=0 mom=1 ofi=0 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=38.9056 trades=1/10
+2026-09-28T09:54:58.660679Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=26 total=15 | vol=11 atr=0 mom=1 ofi=0 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=38.9056 trades=1/10
+2026-09-28T09:55:28.660429Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=27 total=16 | vol=12 atr=0 mom=1 ofi=0 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=39.6305 trades=1/10
+2026-09-28T09:55:58.660344Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=27 total=16 | vol=12 atr=0 mom=1 ofi=0 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=39.6305 trades=1/10
+2026-09-28T09:56:28.660537Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=28 total=17 | vol=12 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=37.7018 trades=1/10
+2026-09-28T09:56:58.661441Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=28 total=17 | vol=12 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=37.7018 trades=1/10
+2026-09-28T09:57:28.662876Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=29 total=18 | vol=13 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=34.6016 trades=1/10
+2026-09-28T09:57:58.661742Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=29 total=18 | vol=13 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=34.6016 trades=1/10
+2026-09-28T09:58:28.662944Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=30 total=19 | vol=14 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=34.5014 trades=1/10
+2026-09-28T09:58:58.661544Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=30 total=19 | vol=14 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=34.5014 trades=1/10
+2026-09-28T09:59:28.663917Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=31 total=20 | vol=15 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=29.9669 trades=1/10
+2026-09-28T09:59:58.662061Z  INFO scalping_agents: [smoke_momentum] Momentum(candles) diag | candles=31 total=20 | vol=15 atr=0 mom=1 ofi=1 regime=2 time=0 lim=0 cd=0 rr=0 passed=1 | min_tp=0.2813% fee_rt=0.1500% lb=10 atr_p=7 ofi_win=5 regime_range=0.299% last_atr=29.9669 trades=1/10
+
+----- 4. SOL/DOGE diag (по 2 последние — поллер кормит свечами?) -----
+2026-09-28T09:59:28.672364Z  INFO scalping_agents: [sol_momentum] Momentum(candles) diag | candles=32 total=19 | vol=12 atr=7 mom=0 ofi=0 regime=0 time=0 lim=0 cd=0 rr=0 passed=0 | min_tp=0.1692% fee_rt=0.0400% lb=12 atr_p=14 ofi_win=3 regime_range=0.518% last_atr=0.0969 trades=0/5
+2026-09-28T09:59:58.672039Z  INFO scalping_agents: [sol_momentum] Momentum(candles) diag | candles=32 total=19 | vol=12 atr=7 mom=0 ofi=0 regime=0 time=0 lim=0 cd=0 rr=0 passed=0 | min_tp=0.1692% fee_rt=0.0400% lb=12 atr_p=14 ofi_win=3 regime_range=0.518% last_atr=0.0969 trades=0/5
+2026-09-28T09:59:28.693778Z  INFO scalping_agents: [doge_momentum] Momentum(candles) diag | candles=32 total=19 | vol=11 atr=3 mom=2 ofi=2 regime=0 time=0 lim=0 cd=0 rr=1 passed=0 | min_tp=0.1692% fee_rt=0.0400% lb=12 atr_p=14 ofi_win=3 regime_range=0.661% last_atr=0.0001 trades=0/5
+2026-09-28T09:59:58.688531Z  INFO scalping_agents: [doge_momentum] Momentum(candles) diag | candles=32 total=19 | vol=11 atr=3 mom=2 ofi=2 regime=0 time=0 lim=0 cd=0 rr=1 passed=0 | min_tp=0.1692% fee_rt=0.0400% lb=12 atr_p=14 ofi_win=3 regime_range=0.661% last_atr=0.0001 trades=0/5
+
+----- 5. HEARTBEAT (последние 4 — счётчики типов) -----
+2026-09-28T09:59:30.426541Z  INFO scalping_agents::websocket: 💓 heartbeat: получено=162071 разобрано=162071 (100.0%) | трейды=0 книги=162071 свечи=0 | тишина=0с | PONG_age=19с | latency≈0мс
+2026-09-28T09:59:30.607461Z  INFO scalping_agents::websocket: 💓 heartbeat: получено=254563 разобрано=254563 (100.0%) | трейды=0 книги=254563 свечи=0 | тишина=0с | PONG_age=19с | latency≈0мс
+2026-09-28T09:59:30.607916Z  INFO scalping_agents::websocket: 💓 heartbeat: получено=77591 разобрано=77591 (100.0%) | трейды=0 книги=77591 свечи=0 | тишина=0с | PONG_age=19с | latency≈0мс
+2026-09-28T09:59:33.270943Z  INFO scalping_agents::websocket: 💓 heartbeat: получено=217498 разобрано=217498 (100.0%) | трейды=21499 книги=176476 свечи=929 | тишина=0с | PONG_age=19с | latency≈158мс
+
+----- 6. PEPE: позиции и сделки (последние 20) -----
+2026-09-28T09:50:28.658150Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82767.86 | Δ=+0.013% | возраст=27с | SL=82659.24 | TP=82985.08 | PnL=+0.5969 | funding=+0.0000 USDT
+2026-09-28T09:50:58.657950Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82780.00 | Δ=+0.028% | возраст=57с | SL=82659.24 | TP=82985.08 | PnL=+1.2491 | funding=+0.0000 USDT
+2026-09-28T09:51:28.658339Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82740.04 | Δ=-0.020% | возраст=87с | SL=82659.24 | TP=82985.08 | PnL=-0.8971 | funding=+0.0000 USDT
+2026-09-28T09:51:58.659156Z  INFO scalping_agents::state::state_manager: 💼 [smoke_momentum] ЛОНГ BTCUSDT | объём=0.05370 | вход=82756.74 | тек=82745.11 | Δ=-0.014% | возраст=117с | SL=82659.24 | TP=82985.08 | PnL=-0.6243 | funding=+0.0000 USDT
+2026-09-28T09:52:04.543816Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [smoke_momentum] BTCUSDT | ЛОНГ 0.05370 | вход=82756.74 выход=82745.11 | удержание=123с

@@ -1,0 +1,1436 @@
+##### p18_harvest2 :: 2026-10-30 09:49:42 :: cwd=C:\Users\BASE_PC\scalping_agentsGLM
+
+##### P18-bf-protective :: src\exchange\binance_futures.rs  lines 100-280  (file total 556)
+  100:         })
+  101:     }
+  102: 
+  103:     async fn place_limit_order(
+  104:         &self,
+  105:         symbol: &str,
+  106:         side: &str,
+  107:         quantity: f64,
+  108:         price: f64,
+  109:         client_order_id: Option<String>,
+  110:     ) -> Result<OrderResult> {
+  111:         let ts = self.now_ms();
+  112:         let qty_str = format!("{}", quantity);
+  113:         let price_str = format!("{}", price);
+  114:         let mut query = format!(
+  115:             "symbol={}&side={}&type=LIMIT&timeInForce=GTX&quantity={}&price={}&timestamp={}",
+  116:             symbol, side, qty_str, price_str, ts
+  117:         );
+  118:         if let Some(id) = client_order_id {
+  119:             query.push_str(&format!("&newClientOrderId={}", id));
+  120:         }
+  121:         let sig = self.sign(&query);
+  122:         let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+  123: 
+  124:         let resp = self.client.post(&url)
+  125:             .header("X-MBX-APIKEY", &self.api_key)
+  126:             .send().await?;
+  127:         let json: Value = resp.json().await?;
+  128:         if let Some(err) = json.get("msg") {
+  129:             return Err(anyhow!("Binance Futures error: {}", err));
+  130:         }
+  131:         Ok(OrderResult {
+  132:             order_id: json["orderId"].as_u64().unwrap_or(0),
+  133:             symbol: symbol.to_string(),
+  134:             side: side.to_string(),
+  135:             price,
+  136:             quantity,
+  137:             executed_qty: 0.0,
+  138:             status: json["status"].as_str().unwrap_or("NEW").to_string(),
+  139:             commission: 0.0,
+  140:         })
+  141:     }
+  142: 
+  143:     // ============================================================
+  144:     // 🔧 ЭТАП B v3: защитные ордера (STOP_MARKET / TAKE_PROFIT_MARKET).
+  145:     // Тестнет принимает их только через Algo Order API.
+  146:     // История ошибок API — три круга валидации, каждый называл следующий
+  147:     // обязательный параметр (в НИЖНЕМ регистре!):
+  148:     //   круг 1: нужен  'type'          → добавили type=
+  149:     //   круг 2: нужен  'algotype'      → добавили algotype=CONDITIONAL
+  150:     //   круг 3: нужен  'triggerprice'  → ЗАМЕНЯЕМ stopPrice= на triggerprice=
+  151:     // Классический /fapi/v1/order остаётся fallback'ом (он понимает stopPrice).
+  152:     // ============================================================
+  153:         // ============================================================
+  154:     // 🔧 ЭТАП B v4: защитные ордера с ЦЕПОЧКОЙ ТОЧНОСТЕЙ.
+  155:     // История валидации Algo API: круг 1 'type', круг 2 'algotype',
+  156:     // круг 3 'triggerprice', круг 4 = -1111 Precision (цена не в tickSize).
+  157:     // Решение: пробуем цену с 8 → 7 → 6 знаками; -1111 = понизить
+  158:     // разрядность. Успешная попытка логирует найденную точность —
+  159:     // это и есть фактический tickSize Algo-эндпоинта.
+  160:     // Классический /fapi/v1/order остаётся финальным fallback'ом.
+  161:     // ============================================================
+  162:     async fn place_protective_order(
+  163:         &self,
+  164:         symbol: &str,
+  165:         side: &str,
+  166:         stop: bool,
+  167:         trigger_price: f64,
+  168:         client_order_id: Option<String>,
+  169:     ) -> Result<OrderResult> {
+  170:         let ord_type = if stop { "STOP_MARKET" } else { "TAKE_PROFIT_MARKET" };
+  171: 
+  172:         // ---------- Цепочка точностей на Algo Order API ----------
+  173:         for &dec in &[8usize, 7, 6] {
+  174:             let tp_str = format!("{:.*}", dec, trigger_price);
+  175:             let ts = self.now_ms();
+  176:             let mut q = format!(
+  177:                 "symbol={}&side={}&type={}&algotype=CONDITIONAL&triggerprice={}&closePosition=true&timestamp={}",
+  178:                 symbol, side, ord_type, tp_str, ts
+  179:             );
+  180:             if let Some(id) = &client_order_id {
+  181:                 q.push_str(&format!("&newClientOrderId={}", id));
+  182:             }
+  183:             let sig = self.sign(&q);
+  184:             let url = format!("{}/fapi/v1/algoOrder?{}&signature={}", self.base_url, q, sig);
+  185:             let resp = self.client.post(&url)
+  186:                 .header("X-MBX-APIKEY", &self.api_key)
+  187:                 .send().await?;
+  188:             let json: Value = resp.json().await?;
+  189: 
+  190:             // Успех = в ответе нет "code" (ошибка приходит как {"code":..,"msg":..})
+  191:             if json["code"].as_i64().is_none() {
+  192:                 let oid = json["algoId"].as_u64()
+  193:                     .or_else(|| json["orderId"].as_u64())
+  194:                     .unwrap_or(0);
+  195:                 tracing::info!(
+  196:                     "[{}] 🛡 защитный {} поставлен через Algo API (id={}, trigger={}, точность={} зн.)",
+  197:                     symbol, ord_type, oid, tp_str, dec
+  198:                 );
+  199:                 return Ok(OrderResult {
+  200:                     order_id: oid,
+  201:                     symbol: symbol.to_string(),
+  202:                     side: side.to_string(),
+  203:                     price: trigger_price,
+  204:                     quantity: 0.0,
+  205:                     executed_qty: 0.0,
+  206:                     status: json["algoStatus"].as_str()
+  207:                         .or_else(|| json["status"].as_str())
+  208:                         .unwrap_or("NEW").to_string(),
+  209:                     commission: 0.0,
+  210:                 });
+  211:             }
+  212: 
+  213:             let code = json["code"].as_i64().unwrap_or(0);
+  214:             let msg = json["msg"].as_str().unwrap_or("?").to_string();
+  215:             tracing::warn!(
+  216:                 "[{}] Algo API (точность {} зн., цена '{}') отказал (code={}): {}",
+  217:                 symbol, dec, tp_str, code, msg
+  218:             );
+  219: 
+  220:             // -1111 = проблема точности → пробуем следующую разрядность.
+  221:             // Любая другая ошибка → точность не поможет, выходим в fallback.
+  222:             if code != -1111 {
+  223:                 break;
+  224:             }
+  225:         }
+  226: 
+  227:         // ---------- Попытка 2: классический /fapi/v1/order (fallback) ----------
+  228:         let ts2 = self.now_ms();
+  229:         let tp_str2 = format!("{:.8}", trigger_price);
+  230:         // AUDIT-P8: workingType=MARK_PRICE — дефолт классики CONTRACT_PRICE,
+  231:         // триггер по last price: спайк last price на тестнете срывает стоп
+  232:         // без реального движения mark price. Mark price устойчив к всплескам.
+  233:         // В Algo-путь выше параметр НЕ добавлен сознательно: эндпоинт
+  234:         // нестандартный, главный путь SL не ломаем до подтверждения того,
+  235:         // что лишний параметр там безопасен.
+  236:         let mut q2 = format!(
+  237:             "symbol={}&side={}&type={}&stopPrice={}&closePosition=true&workingType=MARK_PRICE&timestamp={}",
+  238:             symbol, side, ord_type, tp_str2, ts2
+  239:         );
+  240:         if let Some(id) = client_order_id {
+  241:             q2.push_str(&format!("&newClientOrderId={}", id));
+  242:         }
+  243:         let sig2 = self.sign(&q2);
+  244:         let url2 = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, q2, sig2);
+  245:         let resp2 = self.client.post(&url2)
+  246:             .header("X-MBX-APIKEY", &self.api_key)
+  247:             .send().await?;
+  248:         let json2: Value = resp2.json().await?;
+  249:         if let Some(err) = json2.get("msg") {
+  250:             return Err(anyhow!("Binance Futures защитный ордер: {}", err));
+  251:         }
+  252:         Ok(OrderResult {
+  253:             order_id: json2["orderId"].as_u64().unwrap_or(0),
+  254:             symbol: symbol.to_string(),
+  255:             side: side.to_string(),
+  256:             price: trigger_price,
+  257:             quantity: 0.0,
+  258:             executed_qty: 0.0,
+  259:             status: json2["status"].as_str().unwrap_or("NEW").to_string(),
+  260:             commission: 0.0,
+  261:         })
+  262:     }
+  263: 
+  264:     async fn cancel_order(&self, symbol: &str, order_id: u64) -> Result<bool> {
+  265:         let ts = self.now_ms();
+  266:         let query = format!("symbol={}&orderId={}&timestamp={}", symbol, order_id, ts);
+  267:         let sig = self.sign(&query);
+  268:         let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+  269: 
+  270:         let resp = self.client.delete(&url)
+  271:             .header("X-MBX-APIKEY", &self.api_key)
+  272:             .send().await?;
+  273:         let status = resp.status();
+  274:         let json: Value = resp.json().await.unwrap_or(Value::Null);
+  275: 
+  276:         if status.is_success() {
+  277:             return Ok(true);
+  278:         }
+  279:         // AUDIT-P1: -2011 = «не знаю такой ордер» — для algoId это НОРМА:
+  280:         // классический /fapi/v1/order не видит Algo-ордера. Фолбэк:
+
+##### P18-bf-api-map :: src\exchange\binance_futures.rs  matches=1  pattern=/pub (async )?fn /
+   23:     pub fn new(
+  ----
+
+##### P18-bf-sign :: src\exchange\binance_futures.rs  matches=16  pattern=/hmac|signature|recvWindow/
+##### (showing first 4 of 16)
+    3: use anyhow::{anyhow, Result};
+    4: use async_trait::async_trait;
+    5: use hmac::{Hmac, Mac};
+    6: use reqwest::Client;
+    7: use serde_json::Value;
+  ----
+   10: use std::time::Duration;
+   11: 
+   12: type HmacSha256 = Hmac<Sha256>;
+   13: 
+   14: pub struct BinanceFuturesClient {
+  ----
+   44: 
+   45:     fn sign(&self, query: &str) -> String {
+   46:         let mut mac = HmacSha256::new_from_slice(self.api_secret.as_bytes()).unwrap();
+   47:         mac.update(query.as_bytes());
+   48:         hex::encode(mac.finalize().into_bytes())
+  ----
+   80:         }
+   81:         let sig = self.sign(&query);
+   82:         let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+   83: 
+   84:         let resp = self.client.post(&url)
+  ----
+
+##### P18-bf-ordertypes :: src\exchange\binance_futures.rs  matches=5  pattern=/OP_MARKET|OP_LIMIT|STOP_MARKET|TAKE_PROFIT_MARKET|algotype|CONDITIONAL/
+  143:     // ============================================================
+  144:     // 🔧 ЭТАП B v3: защитные ордера (STOP_MARKET / TAKE_PROFIT_MARKET).
+  145:     // Тестнет принимает их только через Algo Order API.
+  ----
+  148:     //   круг 1: нужен  'type'          → добавили type=
+  149:     //   круг 2: нужен  'algotype'      → добавили algotype=CONDITIONAL
+  150:     //   круг 3: нужен  'triggerprice'  → ЗАМЕНЯЕМ stopPrice= на triggerprice=
+  ----
+  154:     // 🔧 ЭТАП B v4: защитные ордера с ЦЕПОЧКОЙ ТОЧНОСТЕЙ.
+  155:     // История валидации Algo API: круг 1 'type', круг 2 'algotype',
+  156:     // круг 3 'triggerprice', круг 4 = -1111 Precision (цена не в tickSize).
+  ----
+  169:     ) -> Result<OrderResult> {
+  170:         let ord_type = if stop { "STOP_MARKET" } else { "TAKE_PROFIT_MARKET" };
+  171: 
+  ----
+  176:             let mut q = format!(
+  177:                 "symbol={}&side={}&type={}&algotype=CONDITIONAL&triggerprice={}&closePosition=true&timestamp={}",
+  178:                 symbol, side, ord_type, tp_str, ts
+  ----
+
+##### P18-bf-numfmt :: src\exchange\binance_futures.rs  matches=1  pattern=/\{:\.\d/
+  227:         // ---------- Попытка 2: классический /fapi/v1/order (fallback) ----------
+  228:         let ts2 = self.now_ms();
+  229:         let tp_str2 = format!("{:.8}", trigger_price);
+  230:         // AUDIT-P8: workingType=MARK_PRICE — дефолт классики CONTRACT_PRICE,
+  231:         // триггер по last price: спайк last price на тестнете срывает стоп
+  ----
+
+##### P18-bf-filter-use :: src\exchange\binance_futures.rs  matches=0  pattern=/tick_size|step_size|apply_filters|FilterRegistry/
+
+##### P18-sf-body :: src\exchange\symbol_filters.rs  lines 1-360  (file total 372)
+    1: //! ✅ Фаза 2: единый источник фильтров символа (exchangeInfo).
+    2: //! Заменяет шесть слоёв захардкоженных BTC-констант.
+    3: //! Бонус: несуществующий/делистнутый символ теперь валит старт
+    4: //! с понятной ошибкой вместо тихо мёртвого бота (В-19).
+    5: 
+    6: use anyhow::{anyhow, Result};
+    7: use rust_decimal::Decimal;
+    8: use serde_json::Value;
+    9: use std::collections::{HashMap, HashSet};
+   10: 
+   11: #[derive(Debug, Clone)]
+   12: pub struct SymbolFilters {
+   13:     pub tick_size: Decimal,
+   14:     pub step_size: Decimal,
+   15:     pub min_qty: Decimal,
+   16:     pub max_qty: Decimal,
+   17:     pub min_notional: Decimal,
+   18: }
+   19: 
+   20: impl SymbolFilters {
+   21:     /// Цена, кратная тику (к ближайшему) — для лимитных ордеров.
+   22:     pub fn round_price(&self, price: Decimal) -> Decimal {
+   23:         if self.tick_size.is_zero() { return price; }
+   24:         (price / self.tick_size).round() * self.tick_size
+   25:     }
+   26: 
+   27:     /// Объём ВНИЗ к шагу — заказать больше рассчитанного нельзя.
+   28:     pub fn floor_qty(&self, qty: Decimal) -> Decimal {
+   29:         if self.step_size.is_zero() { return qty; }
+   30:         (qty / self.step_size).floor() * self.step_size
+   31:     }
+   32: 
+   33:     pub fn passes_notional(&self, price: Decimal, qty: Decimal) -> bool {
+   34:         price * qty >= self.min_notional
+   35:     }
+   36: 
+   37:     pub fn passes_qty_bounds(&self, qty: Decimal) -> bool {
+   38:         qty >= self.min_qty && qty <= self.max_qty
+   39:     }
+   40: }
+   41: 
+   42: #[derive(Debug, Default)]
+   43: pub struct FilterRegistry {
+   44:     filters: HashMap<String, SymbolFilters>,
+   45: }
+   46: 
+   47: impl FilterRegistry {
+   48:     /// Один запрос exchangeInfo при старте на рынок (spot/futures).
+   49:         /// ✅ Лёгкая загрузка: один запрос на символ (?symbol=..., килобайты вместо мегабайт)
+   50:     /// + 3 попытки — тестнет бывает медленным.
+   51:     pub async fn load(base_url: &str, is_futures: bool, symbols: &[String]) -> Result<Self> {
+   52:         let path = if is_futures { "fapi/v1/exchangeInfo" } else { "api/v3/exchangeInfo" };
+   53:         let base = base_url.trim_end_matches('/').to_string();
+   54:         let client = reqwest::Client::builder()
+   55:             .timeout(std::time::Duration::from_secs(30))
+   56:             .build()?;
+   57: 
+   58:         tracing::info!("📊 Загружаю фильтры: {}/{} (символов: {})", base, path, symbols.len());
+   59: 
+   60:         let wanted: HashSet<String> = symbols.iter().map(|s| s.to_uppercase()).collect();
+   61:         let mut filters = HashMap::new();
+   62: 
+   63:         for sym in &wanted {
+   64:             let url = format!("{}/{}?symbol={}", base, path, sym);
+   65:             let resp: Value = fetch_json_with_retry(&client, &url, 3).await?;
+   66:             let arr = resp["symbols"].as_array()
+   67:                 .ok_or_else(|| anyhow!("exchangeInfo {}: нет массива symbols", sym))?;
+   68: 
+   69:             for s in arr {
+   70:                 if s["symbol"].as_str().unwrap_or("").to_uppercase() != *sym {
+   71:                     continue;
+   72:                 }
+   73:                 if s["status"].as_str().unwrap_or("") != "TRADING" {
+   74:                     return Err(anyhow!("символ {} не в статусе TRADING", sym));
+   75:                 }
+   76: 
+   77:                 let mut tick = Decimal::ZERO;
+   78:                 let mut step = Decimal::ZERO;
+   79:                 let mut min_qty = Decimal::ZERO;
+   80:                 let mut max_qty = Decimal::MAX;
+   81:                 let mut min_notional = Decimal::ZERO;
+   82: 
+   83:                 if let Some(list) = s["filters"].as_array() {
+   84:                     for f in list {
+   85:                         match f["filterType"].as_str().unwrap_or("") {
+   86:                             "PRICE_FILTER" => tick = dec(&f["tickSize"]),
+   87:                             "LOT_SIZE" => {
+   88:                                 step = dec(&f["stepSize"]);
+   89:                                 min_qty = dec(&f["minQty"]);
+   90:                                 max_qty = dec(&f["maxQty"]);
+   91:                             }
+   92:                             "MIN_NOTIONAL" => {
+   93:                                 min_notional = dec(&f["notional"]);
+   94:                                 if min_notional.is_zero() {
+   95:                                     min_notional = dec(&f["minNotional"]);
+   96:                                 }
+   97:                             }
+   98:                             _ => {}
+   99:                         }
+  100:                     }
+  101:                 }
+  102: 
+  103:                 if tick.is_zero() || step.is_zero() {
+  104:                     return Err(anyhow!("{}: не найдены tickSize/stepSize", sym));
+  105:                 }
+  106:                 filters.insert(sym.clone(), SymbolFilters {
+  107:                     tick_size: tick, step_size: step, min_qty, max_qty, min_notional,
+  108:                 });
+  109:             }
+  110:         }
+  111: 
+  112:         for w in &wanted {
+  113:             if !filters.contains_key(w) {
+  114:                 return Err(anyhow!(
+  115:                     "символ {} не найден (рынок: {})",
+  116:                     w, if is_futures { "futures" } else { "spot" }
+  117:                 ));
+  118:             }
+  119:         }
+  120:         tracing::info!("✅ Фильтры загружены: {} символов", filters.len());
+  121:         Ok(Self { filters })
+  122:     }
+  123: 
+  124:         /// 🆕 Phase B: загрузка фильтров с Bybit V5 /v5/market/instruments-info
+  125:     /// Парсит формат Bybit:
+  126:     ///   {
+  127:     ///     "result": {
+  128:     ///       "list": [{
+  129:     ///         "symbol": "XAUUSDT",
+  130:     ///         "status": "Trading",
+  131:     ///         "priceFilter": {"minPrice":"0.01","maxPrice":"199999.98","tickSize":"0.01"},
+  132:     ///         "lotSizeFilter": {"maxOrderQty":"500","minOrderQty":"0.001","qtyStep":"0.001"}
+  133:     ///       }]
+  134:     ///     }
+  135:     ///   }
+  136:     pub async fn load_bybit(base_url: &str, symbols: &[String]) -> Result<Self> {
+  137:         let base = base_url.trim_end_matches('/').to_string();
+  138:         let client = reqwest::Client::builder()
+  139:             .timeout(std::time::Duration::from_secs(30))
+  140:             .build()?;
+  141: 
+  142:         tracing::info!("📊 Загружаю фильтры Bybit: {}/v5/market/instruments-info (символов: {})",
+  143:             base, symbols.len());
+  144: 
+  145:         let wanted: HashSet<String> = symbols.iter().map(|s| s.to_uppercase()).collect();
+  146:         let mut filters = HashMap::new();
+  147: 
+  148:         // Bybit позволяет запросить конкретный символ через ?symbol=XAUUSDT
+  149:         for sym in &wanted {
+  150:             let url = format!("{}/v5/market/instruments-info?category=linear&symbol={}", base, sym);
+  151:             let resp: Value = fetch_json_with_retry(&client, &url, 3).await?;
+  152: 
+  153:             // Проверяем retCode (Bybit V5 convention)
+  154:             let ret_code = resp["retCode"].as_i64().unwrap_or(-1);
+  155:             if ret_code != 0 {
+  156:                 return Err(anyhow!("Bybit instruments-info {}: retCode={} msg={}",
+  157:                     sym, ret_code, resp["retMsg"].as_str().unwrap_or("?")));
+  158:             }
+  159: 
+  160:             let list = resp["result"]["list"]
+  161:                 .as_array()
+  162:                 .ok_or_else(|| anyhow!("Bybit {}: нет массива result.list", sym))?;
+  163: 
+  164:             for s in list {
+  165:                 if s["symbol"].as_str().unwrap_or("").to_uppercase() != *sym {
+  166:                     continue;
+  167:                 }
+  168:                 // Bybit status: "Trading" (capital T) vs Binance "TRADING"
+  169:                 let status = s["status"].as_str().unwrap_or("");
+  170:                 if status != "Trading" {
+  171:                     return Err(anyhow!("символ {} не в статусе Trading (статус: {})", sym, status));
+  172:                 }
+  173: 
+  174:                 // priceFilter
+  175:                 let pf = &s["priceFilter"];
+  176:                 let tick = dec(&pf["tickSize"]);
+  177: 
+  178:                 // lotSizeFilter
+  179:                 let lf = &s["lotSizeFilter"];
+  180:                 let step = dec(&lf["qtyStep"]);
+  181:                 let min_qty = dec(&lf["minOrderQty"]);
+  182:                 let max_qty = dec(&lf["maxOrderQty"]);
+  183: 
+  184:                 // Bybit: minNotionalValue поле на уровне lotSizeFilter (не отдельный фильтр)
+  185:                 let min_notional = dec(&lf["minNotionalValue"]);
+  186: 
+  187:                 if tick.is_zero() || step.is_zero() {
+  188:                     return Err(anyhow!("Bybit {}: не найдены tickSize/stepSize", sym));
+  189:                 }
+  190:                 filters.insert(sym.clone(), SymbolFilters {
+  191:                     tick_size: tick, step_size: step, min_qty, max_qty, min_notional,
+  192:                 });
+  193:             }
+  194:         }
+  195: 
+  196:         for w in &wanted {
+  197:             if !filters.contains_key(w) {
+  198:                 return Err(anyhow!("символ {} не найден на Bybit", w));
+  199:             }
+  200:         }
+  201:         tracing::info!("✅ Bybit фильтры загружены: {} символов", filters.len());
+  202:         Ok(Self { filters })
+  203:     }
+  204: 
+  205:     /// v4.0: OKX V5 /api/v5/public/instruments (SWAP).
+  206:     /// Engine symbols ("XAUUSDT") are queried as "XAU-USDT-SWAP"
+  207:     /// and stored under the engine symbol so filters.get("XAUUSDT") works.
+  208:     pub async fn load_okx(base_url: &str, symbols: &[String]) -> Result<Self> {
+  209:         let base = base_url.trim_end_matches('/').to_string();
+  210:         let client = reqwest::Client::builder()
+  211:             .timeout(std::time::Duration::from_secs(30))
+  212:             .build()?;
+  213: 
+  214:         tracing::info!(
+  215:             "Loading OKX filters: {}/api/v5/public/instruments ({} symbols)",
+  216:             base,
+  217:             symbols.len()
+  218:         );
+  219: 
+  220:         let mut filters = HashMap::new();
+  221: 
+  222:         for sym in symbols {
+  223:             let sym_u = sym.to_uppercase();
+  224:             let inst_id = okx_inst_id(&sym_u);
+  225:             let url = format!(
+  226:                 "{}/api/v5/public/instruments?instType=SWAP&instId={}",
+  227:                 base, inst_id
+  228:             );
+  229:             let resp: serde_json::Value = fetch_json_with_retry(&client, &url, 3).await?;
+  230: 
+  231:             let code = resp["code"].as_str().unwrap_or("-1").to_string();
+  232:             if code != "0" {
+  233:                 return Err(anyhow::anyhow!(
+  234:                     "OKX instruments {}: code={} msg={}",
+  235:                     sym_u,
+  236:                     code,
+  237:                     resp["msg"].as_str().unwrap_or("?")
+  238:                 ));
+  239:             }
+  240: 
+  241:             let d = resp["data"]
+  242:                 .as_array()
+  243:                 .and_then(|a| a.first())
+  244:                 .ok_or_else(|| anyhow::anyhow!("OKX {}: instrument not found", inst_id))?;
+  245: 
+  246:             let state = d["state"].as_str().unwrap_or("");
+  247:             if state != "live" {
+  248:                 return Err(anyhow::anyhow!("symbol {} is not live (state: {})", sym_u, state));
+  249:             }
+  250: 
+  251:             let tick = dec(&d["tickSz"]);
+  252:             let step = dec(&d["lotSz"]);
+  253:             let min_qty = dec(&d["minSz"]);
+  254:             let mut max_qty = dec(&d["maxLmtSz"]);
+  255:             if max_qty.is_zero() {
+  256:                 max_qty = Decimal::MAX;
+  257:             }
+  258:             // OKX perpetuals have no MIN_NOTIONAL filter; the gate passes always.
+  259:             let min_notional = Decimal::ZERO;
+  260: 
+  261:             if tick.is_zero() || step.is_zero() {
+  262:                 return Err(anyhow::anyhow!("OKX {}: tickSz/lotSz missing", sym_u));
+  263:             }
+  264: 
+  265:             filters.insert(
+  266:                 sym_u.clone(),
+  267:                 SymbolFilters {
+  268:                     tick_size: tick,
+  269:                     step_size: step,
+  270:                     min_qty,
+  271:                     max_qty,
+  272:                     min_notional,
+  273:                 },
+  274:             );
+  275:         }
+  276: 
+  277:         for w in symbols {
+  278:             let w = w.to_uppercase();
+  279:             if !filters.contains_key(&w) {
+  280:                 return Err(anyhow::anyhow!("symbol {} not found on OKX", w));
+  281:             }
+  282:         }
+  283: 
+  284:         tracing::info!("OKX filters loaded: {} symbols", filters.len());
+  285:         Ok(Self { filters })
+  286:     }
+  287:     pub fn get(&self, symbol: &str) -> Result<&SymbolFilters> {
+  288:         self.filters.get(&symbol.to_uppercase())
+  289:             .ok_or_else(|| anyhow!("нет фильтров для {} (не загружен при старте)", symbol))
+  290:     }
+  291: }
+  292: 
+  293: fn dec(v: &Value) -> Decimal {
+  294:     v.as_str().and_then(|s| s.parse::<Decimal>().ok()).unwrap_or(Decimal::ZERO)
+  295: }
+  296: 
+  297: /// GET → JSON с ретраями и паузами.
+  298: async fn fetch_json_with_retry(client: &reqwest::Client, url: &str, attempts: u32) -> Result<Value> {
+  299:     let mut last_err: Option<anyhow::Error> = None;
+  300:     for attempt in 1..=attempts {
+  301:         match client.get(url).send().await {
+  302:             Ok(r) => match r.json::<Value>().await {
+  303:                 Ok(v) => return Ok(v),
+  304:                 Err(e) => {
+  305:                     tracing::warn!("📊 попытка {}/{}: {}", attempt, attempts, e);
+  306:                     last_err = Some(e.into());
+  307:                 }
+  308:             },
+  309:             Err(e) => {
+  310:                 tracing::warn!("📊 попытка {}/{}: {}", attempt, attempts, e);
+  311:                 last_err = Some(e.into());
+  312:             }
+  313:         }
+  314:         if attempt < attempts {
+  315:             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+  316:         }
+  317:     }
+  318:     Err(last_err.unwrap_or_else(|| anyhow!("unknown error")))
+  319: }
+  320: 
+  321: #[cfg(test)]
+  322: mod tests {
+  323:     use super::*;
+  324: 
+  325:     fn doge_like() -> SymbolFilters {
+  326:         SymbolFilters {
+  327:             tick_size: "0.0001".parse().unwrap(),
+  328:             step_size: "1".parse().unwrap(),
+  329:             min_qty: "1".parse().unwrap(),
+  330:             max_qty: "50000000".parse().unwrap(),
+  331:             min_notional: "5".parse().unwrap(),
+  332:         }
+  333:     }
+  334: 
+  335:     #[test]
+  336:     fn round_price_to_tick() {
+  337:         let f = doge_like();
+  338:         assert_eq!(f.round_price("0.163256".parse().unwrap()), "0.1633".parse::<Decimal>().unwrap());
+  339:     }
+  340: 
+  341:     #[test]
+  342:     fn floor_qty_integer_step() {
+  343:         let f = doge_like();
+  344:         assert_eq!(f.floor_qty("1234.999".parse().unwrap()), "1234".parse::<Decimal>().unwrap());
+  345:     }
+  346: 
+  347:     #[test]
+  348:     fn notional_check() {
+  349:         let f = doge_like();
+  350:         assert!(f.passes_notional("0.1633".parse().unwrap(), "1234".parse().unwrap()));
+  351:         assert!(!f.passes_notional("0.1633".parse().unwrap(), "10".parse().unwrap()));
+  352:     }
+  353: 
+  354:     #[test]
+  355:     fn zero_tick_is_noop() {
+  356:         let mut f = doge_like();
+  357:         f.tick_size = Decimal::ZERO;
+  358:         let p: Decimal = "0.123456".parse().unwrap();
+  359:         assert_eq!(f.round_price(p), p);
+  360:     }
+
+##### P18-sf-api-map :: src\exchange\symbol_filters.rs  matches=8  pattern=/pub (async )?fn /
+   22:     pub fn round_price(&self, price: Decimal) -> Decimal {
+  ----
+   28:     pub fn floor_qty(&self, qty: Decimal) -> Decimal {
+  ----
+   33:     pub fn passes_notional(&self, price: Decimal, qty: Decimal) -> bool {
+  ----
+   37:     pub fn passes_qty_bounds(&self, qty: Decimal) -> bool {
+  ----
+   51:     pub async fn load(base_url: &str, is_futures: bool, symbols: &[String]) -> Result<Self> {
+  ----
+  136:     pub async fn load_bybit(base_url: &str, symbols: &[String]) -> Result<Self> {
+  ----
+  208:     pub async fn load_okx(base_url: &str, symbols: &[String]) -> Result<Self> {
+  ----
+  287:     pub fn get(&self, symbol: &str) -> Result<&SymbolFilters> {
+  ----
+
+##### P18-traits-full :: src\exchange\traits.rs  lines 1-80  (file total 80)
+    1: use anyhow::Result;
+    2: use async_trait::async_trait;
+    3: 
+    4: #[async_trait]
+    5: pub trait ExchangeClient: Send + Sync {
+    6:     async fn place_market_order(
+    7:         &self,
+    8:         symbol: &str,
+    9:         side: &str,
+   10:         quantity: f64,
+   11:         client_order_id: Option<String>,
+   12:     ) -> Result<OrderResult>;
+   13: 
+   14:     async fn place_limit_order(
+   15:         &self,
+   16:         symbol: &str,
+   17:         side: &str,
+   18:         quantity: f64,
+   19:         price: f64,
+   20:         client_order_id: Option<String>,
+   21:     ) -> Result<OrderResult>;
+   22: 
+   23:     /// 🔧 ЖЁСТКИЕ ЗАЩИТЫ (Этап B): постановка защитного ордера на бирже.
+   24:     /// stop=true  → STOP_MARKET (стоп-лосс)
+   25:     /// stop=false → TAKE_PROFIT_MARKET (тейк-профит)
+   26:     /// closePosition=true → закрывает ВСЮ позицию при триггере,
+   27:     /// quantity НЕ указывается (биржа отвергает связку).
+   28:     /// client_order_id: префикс "pr_" помечает ордер как защитный —
+   29:     /// sweep при shutdown не снимает их при живой позиции.
+   30:     async fn place_protective_order(
+   31:         &self,
+   32:         symbol: &str,
+   33:         side: &str,
+   34:         stop: bool,
+   35:         trigger_price: f64,
+   36:         client_order_id: Option<String>,
+   37:     ) -> Result<OrderResult>;
+   38: 
+   39:     /// ✅ К-11: true = отменён; false = ордера уже нет — это НЕ ошибка.
+   40:     async fn cancel_order(&self, symbol: &str, order_id: u64) -> Result<bool>;
+   41: 
+   42:     async fn get_order_status(&self, symbol: &str, order_id: u64) -> Result<OrderResult>;
+   43:     async fn get_order_by_client_id(&self, symbol: &str, orig_client_order_id: &str) -> Result<OrderResult>;
+   44:     async fn get_open_orders(&self, symbol: &str) -> Result<Vec<OrderResult>>;
+   45:     async fn get_balance(&self, asset: &str) -> Result<f64>;
+   46:     async fn get_order_book(&self, symbol: &str, limit: usize) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>)>;
+   47:     async fn sync_time(&self) -> Result<()>;
+   48: 
+   49:     /// ✅ 4г: открытые позиции на бирже (для reconciliation).
+   50:     async fn get_positions(&self) -> Result<Vec<ExchangePosition>> {
+   51:         Ok(Vec::new())
+   52:     }
+   53: 
+   54:     /// ✅ ПРАВКА 2 (докапчивание): фактическая комиссия ордера из income.
+   55:     async fn get_order_commission(&self, _symbol: &str, _order_id: u64) -> Result<f64> {
+   56:         Ok(0.0)
+   57:     }
+   58: }
+   59: 
+   60: #[derive(Debug, Clone)]
+   61: pub struct OrderResult {
+   62:     pub order_id: u64,
+   63:     pub symbol: String,
+   64:     pub side: String,
+   65:     pub price: f64,
+   66:     pub quantity: f64,
+   67:     pub executed_qty: f64,
+   68:     pub status: String,
+   69:     /// ✅ ДОРОГА А: фактическая комиссия исполнения (USDT, ≥ 0).
+   70:     pub commission: f64,
+   71: }
+   72: 
+   73: /// ✅ 4г: позиция на бирже для reconciliation.
+   74: #[derive(Debug, Clone)]
+   75: pub struct ExchangePosition {
+   76:     pub symbol: String,
+   77:     /// положительный = long, отрицательный = short
+   78:     pub qty: f64,
+   79:     pub entry_price: f64,
+   80: }
+
+##### P18-ee-protective-zone :: src\execution\execution_engine.rs  lines 620-800  (file total 1518)
+  620:                                         "[{}] 🚨 не снять защитный {} #{}: {}",
+  621:                                         self.config.name, tag, oid, e
+  622:                                     ),
+  623:                                 }
+  624:                             }
+  625:                         }
+  626:                     }
+  627:                 }
+  628:             }
+  629:         }
+  630:     }
+  631: 
+  632:     // ============================================================
+  633:     // 🔧 ЭТАП B: поставить защитные ордера после входа.
+  634:     // ============================================================
+  635:     async fn place_protective_orders(
+  636:         &self,
+  637:         rest: &Arc<dyn ExchangeClient>,
+  638:         signal: &Signal,
+  639:         entry_order_id: u64,
+  640:     ) {
+  641:         let close_side = if signal.side == "BUY" { "SELL" } else { "BUY" };
+  642: 
+  643:         if let Some(sl) = signal.stop_loss {
+  644:             let mut placed = false;
+  645:             for attempt in 1..=2u32 {
+  646:                                 // 🔧 Если shutdown уже закрыл позицию — защиты не нужны
+  647:                 if self.state_manager.get_positions().is_empty() {
+  648:                     tracing::warn!(
+  649:                         "[{}] позиция уже закрыта (shutdown) — прерываю постановку защит",
+  650:                         self.config.name
+  651:                     );
+  652:                     return;
+  653:                 }
+  654:                 match rest
+  655:                     .place_protective_order(
+  656:                         &signal.symbol,
+  657:                         &close_side,
+  658:                         true,
+  659:                         sl,
+  660:                         Some(format!("pr_sl_{}", entry_order_id)),
+  661:                     )
+  662:                     .await
+  663:                 {
+  664:                     Ok(o) => {
+  665:                         self.state_manager
+  666:                             .set_sl_order_id(&signal.symbol, o.order_id.to_string())
+  667:                             .await;
+  668:                         tracing::info!(
+  669:                             "[{}] 🛡 биржевой STOP_MARKET #{} @ {:.8} поставлен",
+  670:                             self.config.name, o.order_id, sl
+  671:                         );
+  672:                         placed = true;
+  673:                         break;
+  674:                     }
+  675:                     Err(e) => {
+  676:                         tracing::warn!(
+  677:                             "[{}] 🛡 STOP_MARKET попытка {}/2 не удалась: {}",
+  678:                             self.config.name, attempt, e
+  679:                         );
+  680:                         tokio::time::sleep(std::time::Duration::from_millis(
+  681:                             1000 * attempt as u64,
+  682:                         ))
+  683:                         .await;
+  684:                     }
+  685:                 }
+  686:             }
+  687:             if !placed {
+  688:                 tracing::error!(
+  689:                     "[{}] 🚨 позиция БЕЗ биржевого стопа — работает только софт-защита",
+  690:                     self.config.name
+  691:                 );
+  692:             }
+  693:         }
+  694: 
+  695:         if let Some(tp) = signal.take_profit {
+  696:             let mut placed = false;
+  697:             for attempt in 1..=2u32 {
+  698:                                 // 🔧 Если shutdown уже закрыл позицию — защиты не нужны
+  699:                 if self.state_manager.get_positions().is_empty() {
+  700:                     tracing::warn!(
+  701:                         "[{}] позиция уже закрыта (shutdown) — прерываю постановку защит",
+  702:                         self.config.name
+  703:                     );
+  704:                     return;
+  705:                 }
+  706:                 match rest
+  707:                     .place_protective_order(
+  708:                         &signal.symbol,
+  709:                         &close_side,
+  710:                         false,
+  711:                         tp,
+  712:                         Some(format!("pr_tp_{}", entry_order_id)),
+  713:                     )
+  714:                     .await
+  715:                 {
+  716:                     Ok(o) => {
+  717:                         self.state_manager
+  718:                             .set_tp_order_id(&signal.symbol, o.order_id.to_string())
+  719:                             .await;
+  720:                         tracing::info!(
+  721:                             "[{}] 🛡 биржевой TAKE_PROFIT_MARKET #{} @ {:.8} поставлен",
+  722:                             self.config.name, o.order_id, tp
+  723:                         );
+  724:                         placed = true;
+  725:                         break;
+  726:                     }
+  727:                     Err(e) => {
+  728:                         tracing::warn!(
+  729:                             "[{}] 🛡 TP_MARKET попытка {}/2 не удалась: {}",
+  730:                             self.config.name, attempt, e
+  731:                         );
+  732:                         tokio::time::sleep(std::time::Duration::from_millis(
+  733:                             1000 * attempt as u64,
+  734:                         ))
+  735:                         .await;
+  736:                     }
+  737:                 }
+  738:             }
+  739:             if !placed {
+  740:                 tracing::error!(
+  741:                     "[{}] 🚨 позиция БЕЗ биржевого TP — работает только софт-TP",
+  742:                     self.config.name
+  743:                 );
+  744:             }
+  745:         }
+  746:     }
+  747: 
+  748:     fn exit_allows_maker(&self, strategy_name: &str) -> bool {
+  749:         !matches!(
+  750:             strategy_name,
+  751:             "Exit_StopLoss" | "Exit_Timeout" | "Exit_Panic" | "Exit_Shutdown_Market"
+  752:         )
+  753:     }
+  754: 
+  755:     async fn close_position_real(
+  756:         &self,
+  757:         rest: &Arc<dyn ExchangeClient>,
+  758:         signal: &Signal,
+  759:     ) -> Option<f64> {
+  760:         // anti-hammer
+  761:         {
+  762:             let key = signal.symbol.clone();
+  763:             let now = std::time::SystemTime::now()
+  764:                 .duration_since(std::time::UNIX_EPOCH)
+  765:                 .map(|d| d.as_millis() as i64)
+  766:                 .unwrap_or(0);
+  767:             let mut map = self.last_close_attempt_ms.lock().unwrap();
+  768:             if let Some(&t) = map.get(&key) {
+  769:                 if now - t < 5000 {
+  770:                     tracing::debug!(
+  771:                         "[{}] закрытие {}: throttle — менее 5с с прошлой попытки",
+  772:                         self.config.name, key
+  773:                     );
+  774:                     return None;
+  775:                 }
+  776:             }
+  777:             map.insert(key, now);
+  778:         }
+  779: 
+  780:         let qty = self
+  781:             .apply_filters(&signal.symbol, signal.price, signal.quantity)
+  782:             .map(|(_, q)| q)
+  783:             .unwrap_or(signal.quantity);
+  784: 
+  785:         // ПЫЛЬ
+  786:         if let Some(f) = self.filters.as_ref().and_then(|r| r.get(&signal.symbol).ok()) {
+  787:             let min_n = f.min_notional.to_f64().unwrap_or(0.0);
+  788:             if qty * signal.price < min_n {
+  789:                 tracing::warn!(
+  790:                     "[{}] 🧹 ПЫЛЬ: {} × {:.8} = ${:.4} < minNotional {} — погашена в state без ордера",
+  791:                     self.config.name, qty, signal.price, qty * signal.price, min_n
+  792:                 );
+  793:                 let pnl = self
+  794:                     .state_manager
+  795:                     .close_position(&signal.symbol, signal.price, qty)
+  796:                     .await;
+  797:                 return Some(pnl);
+  798:             }
+  799:         }
+  800: 
+
+##### P18-ee-1000 :: src\execution\execution_engine.rs  lines 990-1090  (file total 1518)
+  990:                     "[{}] ❌ закрытие {} не подтверждено: {} — позиция остаётся, повтор (throttled)",
+  991:                     self.config.name, signal.symbol, e
+  992:                 );
+  993:                 None
+  994:             }
+  995:         }
+  996:     }
+  997: 
+  998:     fn new_client_id(&self) -> String {
+  999:         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+ 1000:         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+ 1001:         let ms = std::time::SystemTime::now()
+ 1002:             .duration_since(std::time::UNIX_EPOCH)
+ 1003:             .map(|d| d.as_millis())
+ 1004:             .unwrap_or(0);
+ 1005:         format!("sa{}x{}", ms, n)
+ 1006:     }
+ 1007: 
+ 1008:     pub async fn execute(&self, signal: Signal) -> Result<ExecOutcome> {
+ 1009:         if signal.strategy_name.starts_with("Exit_") {
+ 1010:             // ============================================================
+ 1011:             // 🔧 ЭТАП B: синхронизация биржевого стопа (подтяжка).
+ 1012:             // ============================================================
+ 1013:             if signal.strategy_name == "Exit_UpdateSL" {
+ 1014:                 if let Some(rest) = &self.rest_client {
+ 1015:                     let (sl_id, _tp_id) = self.state_manager.get_protective_ids(&signal.symbol);
+ 1016:                     let new_sl = signal.price;
+ 1017:                     if let Some(old_id_str) = sl_id {
+ 1018:                         let old_id: u64 = old_id_str.parse().unwrap_or(0);
+ 1019:                         if old_id > 0 {
+ 1020:                             let _ = rest.cancel_order(&signal.symbol, old_id).await;
+ 1021:                         }
+ 1022:                     }
+ 1023:                     let close_side = signal.side.clone();
+ 1024:                     match rest
+ 1025:                         .place_protective_order(
+ 1026:                             &signal.symbol,
+ 1027:                             &close_side,
+ 1028:                             true,
+ 1029:                             new_sl,
+ 1030:                             Some(format!(
+ 1031:                                 "pr_sl_t{}",
+ 1032:                                 chrono::Utc::now().timestamp_millis()
+ 1033:                             )),
+ 1034:                         )
+ 1035:                         .await
+ 1036:                     {
+ 1037:                         Ok(o) => {
+ 1038:                             self.state_manager
+ 1039:                                 .set_sl_order_id(&signal.symbol, o.order_id.to_string())
+ 1040:                                 .await;
+ 1041:                             tracing::info!(
+ 1042:                                 "[{}] 🎗 биржевой стоп подтянут: #{} → {:.8}",
+ 1043:                                 self.config.name, o.order_id, new_sl
+ 1044:                             );
+ 1045:                         }
+ 1046:                         Err(e) => {
+ 1047:                             tracing::error!(
+ 1048:                                 "[{}] 🚨 подтяжка стопа не удалась ({}): повторная попытка",
+ 1049:                                 self.config.name, e
+ 1050:                             );
+ 1051:                             if let Ok(o) = rest
+ 1052:                                 .place_protective_order(
+ 1053:                                     &signal.symbol, &close_side, true, new_sl, None,
+ 1054:                                 )
+ 1055:                                 .await
+ 1056:                             {
+ 1057:                                 self.state_manager
+ 1058:                                     .set_sl_order_id(&signal.symbol, o.order_id.to_string())
+ 1059:                                     .await;
+ 1060:                                 tracing::warn!(
+ 1061:                                     "[{}] 🛡 стоп поставлен со 2-й попытки #{}",
+ 1062:                                     self.config.name, o.order_id
+ 1063:                                 );
+ 1064:                             } else {
+ 1065:                                 tracing::error!(
+ 1066:                                     "[{}] 🚨🚨 позиция без биржевого стопа после подтяжки — \
+ 1067:                                      работает софт-стоп; СВЕРИТЬ openOrders",
+ 1068:                                     self.config.name
+ 1069:                                 );
+ 1070:                             }
+ 1071:                         }
+ 1072:                     }
+ 1073:                 }
+ 1074:                 return Ok(ExecOutcome::Missed("Exit_UpdateSL выполнен".into()));
+ 1075:             }
+ 1076: 
+ 1077:             if self.simulate {
+ 1078:                 let pnl = self
+ 1079:                     .state_manager
+ 1080:                     .close_position(&signal.symbol, signal.price, signal.quantity)
+ 1081:                     .await;
+ 1082:                 if !signal.strategy_name.starts_with("Exit_Partial") {
+ 1083:                     self.global_risk
+ 1084:                         .unregister_position(&self.config.name, &signal.symbol);
+ 1085:                 }
+ 1086:                 return Ok(ExecOutcome::Exit(pnl));
+ 1087:             }
+ 1088:             if let Some(rest) = &self.rest_client {
+ 1089:                 return match self.close_position_real(rest, &signal).await {
+ 1090:                     Some(pnl) => {
+
+##### P18-ee-updatesl :: src\execution\execution_engine.rs  matches=2  pattern=/Exit_UpdateSL|UpdateSL|update_sl/
+ 1001:         let ms = std::time::SystemTime::now()
+ 1002:             .duration_since(std::time::UNIX_EPOCH)
+ 1003:             .map(|d| d.as_millis())
+ 1004:             .unwrap_or(0);
+ 1005:         format!("sa{}x{}", ms, n)
+ 1006:     }
+ 1007: 
+ 1008:     pub async fn execute(&self, signal: Signal) -> Result<ExecOutcome> {
+ 1009:         if signal.strategy_name.starts_with("Exit_") {
+ 1010:             // ============================================================
+ 1011:             // 🔧 ЭТАП B: синхронизация биржевого стопа (подтяжка).
+ 1012:             // ============================================================
+ 1013:             if signal.strategy_name == "Exit_UpdateSL" {
+ 1014:                 if let Some(rest) = &self.rest_client {
+ 1015:                     let (sl_id, _tp_id) = self.state_manager.get_protective_ids(&signal.symbol);
+ 1016:                     let new_sl = signal.price;
+ 1017:                     if let Some(old_id_str) = sl_id {
+ 1018:                         let old_id: u64 = old_id_str.parse().unwrap_or(0);
+ 1019:                         if old_id > 0 {
+ 1020:                             let _ = rest.cancel_order(&signal.symbol, old_id).await;
+ 1021:                         }
+ 1022:                     }
+ 1023:                     let close_side = signal.side.clone();
+ 1024:                     match rest
+ 1025:                         .place_protective_order(
+  ----
+ 1062:                                     self.config.name, o.order_id
+ 1063:                                 );
+ 1064:                             } else {
+ 1065:                                 tracing::error!(
+ 1066:                                     "[{}] 🚨🚨 позиция без биржевого стопа после подтяжки — \
+ 1067:                                      работает софт-стоп; СВЕРИТЬ openOrders",
+ 1068:                                     self.config.name
+ 1069:                                 );
+ 1070:                             }
+ 1071:                         }
+ 1072:                     }
+ 1073:                 }
+ 1074:                 return Ok(ExecOutcome::Missed("Exit_UpdateSL выполнен".into()));
+ 1075:             }
+ 1076: 
+ 1077:             if self.simulate {
+ 1078:                 let pnl = self
+ 1079:                     .state_manager
+ 1080:                     .close_position(&signal.symbol, signal.price, signal.quantity)
+ 1081:                     .await;
+ 1082:                 if !signal.strategy_name.starts_with("Exit_Partial") {
+ 1083:                     self.global_risk
+ 1084:                         .unregister_position(&self.config.name, &signal.symbol);
+ 1085:                 }
+ 1086:                 return Ok(ExecOutcome::Exit(pnl));
+  ----
+
+##### P18-ee-applyfilters :: src\execution\execution_engine.rs  matches=4  pattern=/apply_filters/
+  113:             .maker_fee
+  114:             .to_f64()
+  115:             .unwrap_or(if self.config.market_type == "futures" { 0.0002 } else { 0.00075 })
+  116:     }
+  117: 
+  118:     fn apply_filters(&self, symbol: &str, price: f64, qty: f64) -> Option<(f64, f64)> {
+  119:         let f = self.filters.as_ref()?.get(symbol).ok()?;
+  120:         let p = Decimal::from_f64(price)?;
+  121:         let q = Decimal::from_f64(qty)?;
+  122:         Some((f.round_price(p).to_f64()?, f.floor_qty(q).to_f64()?))
+  123:     }
+  ----
+  776:             }
+  777:             map.insert(key, now);
+  778:         }
+  779: 
+  780:         let qty = self
+  781:             .apply_filters(&signal.symbol, signal.price, signal.quantity)
+  782:             .map(|(_, q)| q)
+  783:             .unwrap_or(signal.quantity);
+  784: 
+  785:         // ПЫЛЬ
+  786:         if let Some(f) = self.filters.as_ref().and_then(|r| r.get(&signal.symbol).ok()) {
+  ----
+  807:             && self.config.market_type == "futures"
+  808:             && self.exit_allows_maker(&signal.strategy_name);
+  809: 
+  810:         if use_maker_exit {
+  811:             if let Some(price) = self
+  812:                 .apply_filters(&signal.symbol, signal.price, signal.quantity)
+  813:                 .map(|(p, _)| p)
+  814:             {
+  815:                 tracing::info!(
+  816:                     "[{}] maker-выход: limit {} {:.5} @ {:.8}",
+  817:                     self.config.name, signal.side, qty, price
+  ----
+ 1195:                 "backoff 60с после сетевого сбоя входа".into(),
+ 1196:             ));
+ 1197:         }
+ 1198: 
+ 1199:         let (safe_price, safe_qty) = match self
+ 1200:             .apply_filters(&signal.symbol, signal.price, signal.quantity)
+ 1201:         {
+ 1202:             Some(v) => v,
+ 1203:             None => {
+ 1204:                 tracing::error!(
+ 1205:                     "[{}] нет фильтров для {} — ордер отклонён (fail-safe)",
+  ----
+
+##### P18-ee-place :: src\execution\execution_engine.rs  matches=4  pattern=/place_order|place_and_wait/
+  246:         None
+  247:     }
+  248: 
+  249:     async fn place_and_wait<F, Fut>(
+  250:         &self,
+  251:         rest: &Arc<dyn ExchangeClient>,
+  252:         symbol: &str,
+  ----
+  355:         let client_id = self.new_client_id();
+  356: 
+  357:         let status = match self
+  358:             .place_and_wait(
+  359:                 rest,
+  360:                 &signal.symbol,
+  361:                 || {
+  ----
+  534:         qty: f64,
+  535:     ) -> Result<OrderResult> {
+  536:         let status = match self
+  537:             .place_and_wait(
+  538:                 rest,
+  539:                 &signal.symbol,
+  540:                 || async {
+  ----
+  817:                     self.config.name, signal.side, qty, price
+  818:                 );
+  819:                 let status_res = self
+  820:                     .place_and_wait(
+  821:                         rest,
+  822:                         &signal.symbol,
+  823:                         || async {
+  ----
+
+##### P18-ee-api-map :: src\execution\execution_engine.rs  matches=2  pattern=/pub (async )?fn /
+   41:     pub fn new(
+  ----
+ 1008:     pub async fn execute(&self, signal: Signal) -> Result<ExecOutcome> {
+  ----
+
+##### P18-mn-updatesl :: src\main.rs  matches=4  pattern=/Exit_UpdateSL|UpdateSL|update_sl/
+ 1302:                         }
+ 1303:                         Ok(execution::ExecOutcome::ExitUnconfirmed) => {
+ 1304:                             tracing::warn!(
+ 1305:                                 "[{}] закрытие не подтверждено — повтор на следующем тике",
+ 1306:                                 bot_name
+ 1307:                             );
+ 1308:                             // 🔧 САМОСОЗНАНИЕ: судьба позиции неизвестна
+ 1309:                             strategy.on_position_unknown();
+ 1310:                         }
+ 1311:                         Ok(other) => {
+ 1312:                             if exit_signal.strategy_name == "Exit_UpdateSL" {
+ 1313:                                 // qty=0 — только синхронизация биржевого стопа, не закрытие
+ 1314:                                 tracing::info!("[{}] 🛡 биржевой стоп синхронизирован ({:?})", bot_name, other);
+ 1315:                             } else {
+ 1316:                                 tracing::warn!("[{}] закрытие: неожиданный исход {:?}", bot_name, other);
+ 1317:                             }
+ 1318:                         }
+ 1319:                         Err(e) => {
+ 1320:                             if exit_signal.strategy_name == "Exit_UpdateSL" {
+ 1321:                                 tracing::warn!("[{}] 🛡 синхронизация стопа не удалась: {:?}", bot_name, e);
+ 1322:                             } else {
+  ----
+ 1323:                                 tracing::error!("[{}] ❌ ошибка исполнения закрытия: {:?}", bot_name, e);
+ 1324:                             }
+ 1325:                         }
+ 1326:                     }
+ 1327:                     continue;
+ 1328:                 }
+ 1329:                 } // ✅ П3: конец if !is_backfill
+ 1330: 
+  ----
+ 1519:                                     "🔔 [{}] СДЕЛКА ЗАКРЫТА (по таймеру) | результат={} | PnL={:+.4}",
+ 1520:                                     bot_name, result, pnl
+ 1521:                                 );
+ 1522:                             }
+ 1523:                             Ok(execution::ExecOutcome::ExitUnconfirmed) => {
+ 1524:                                 tracing::warn!("[{}] закрытие (таймер) не подтверждено — повтор", bot_name);
+ 1525:                                 // 🔧 САМОСОЗНАНИЕ: судьба позиции неизвестна
+ 1526:                                 strategy.on_position_unknown();
+ 1527:                             }
+ 1528:                             Ok(other) => {
+ 1529:                                 if exit_signal.strategy_name == "Exit_UpdateSL" {
+ 1530:                                     // qty=0 — только синхронизация биржевого стопа, не закрытие
+ 1531:                                     tracing::info!("[{}] 🛡 биржевой стоп синхронизирован ({:?})", bot_name, other);
+ 1532:                                 } else {
+ 1533:                                     tracing::error!("[{}] закрытие (таймер): неожидаемый исход {:?}", bot_name, other);
+ 1534:                                 }
+ 1535:                             }
+ 1536:                             Err(e) => {
+ 1537:                                 if exit_signal.strategy_name == "Exit_UpdateSL" {
+ 1538:                                     tracing::warn!("[{}] 🛡 синхронизация стопа не удалась (повтор на следующем тике): {:?}", bot_name, e);
+ 1539:                                 } else {
+  ----
+ 1540:                                     tracing::error!("[{}] закрытие (таймер): {:?}", bot_name, e);
+ 1541:                                 }
+ 1542:                             }
+ 1543:                         }
+ 1544:                     }
+ 1545:                 }
+ 1546:             }
+ 1547: 
+  ----
+
+##### P18-mn-1000 :: src\main.rs  lines 1000-1050  (file total 1596)
+ 1000:             hist.is_backfill = true;
+ 1001:             let msg = websocket::WebSocketMessage::Kline(hist);
+ 1002:             match strategy_agent.process(&msg, strategy.as_mut()).await {
+ 1003:                 Ok(Some(_)) => warm_signals_dropped += 1,
+ 1004:                 Ok(_) => {}
+ 1005:                 Err(e) => {
+ 1006:                     tracing::warn!(
+ 1007:                         "[{}] прогрев (кэш): стратегия отклонила свечу: {}",
+ 1008:                         bot_name, e
+ 1009:                     );
+ 1010:                     break;
+ 1011:                 }
+ 1012:             }
+ 1013:             warm_from_cache += 1;
+ 1014:         }
+ 1015:     }
+ 1016: 
+ 1017:     if warm_fed > 0 || warm_from_cache > 0 || warm_books_dropped > 0 {
+ 1018:         tracing::info!(
+ 1019:             "[{}] 🔥 прогрев стратегии: {} свечей из буфера + {} из кэша хаба{}{}",
+ 1020:             bot_name,
+ 1021:             warm_fed,
+ 1022:             warm_from_cache,
+ 1023:             if warm_signals_dropped > 0 {
+ 1024:                 format!(" | сигналов истории отклонено: {}", warm_signals_dropped)
+ 1025:             } else {
+ 1026:                 String::new()
+ 1027:             },
+ 1028:             if warm_books_dropped > 0 {
+ 1029:                 format!(" | книг/трейдов мимо цикла: {}", warm_books_dropped)
+ 1030:             } else {
+ 1031:                 String::new()
+ 1032:             }
+ 1033:         );
+ 1034:     }
+ 1035: 
+ 1036:     let mut log_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+ 1037:     log_interval.tick().await;
+ 1038: 
+ 1039:     let mut position_check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+ 1040:     position_check_interval.tick().await;
+ 1041: 
+ 1042:     // ✅ DIAG v3.4.1: трассировка доставки сообщений/backfill до цикла бота.
+ 1043:     // Временный инструментальный пакет — убирается после диагностики.
+ 1044:     let mut diag_backfill_seen: u64 = 0;
+ 1045:     let mut diag_first_msg_logged: bool = false;
+ 1046:     let mut diag_gate_skips: u64 = 0;
+ 1047: 
+ 1048:     loop {
+ 1049:         tokio::select! {
+ 1050:             biased;
+
+##### P18-strat-consts :: tree src\strategies  pattern=/TICK_SIZE|QTY_STEP/
+##### total: 41 match(es) in 6 file(s)
+  src\strategies\bounce_trader.rs :: 10
+  src\strategies\gold_session_trader.rs :: 6
+  src\strategies\keltner_dca.rs :: 7
+  src\strategies\liquidity_grab.rs :: 6
+  src\strategies\momentum.rs :: 6
+  src\strategies\momentum_v3.rs :: 6
+  ---- src\strategies\bounce_trader.rs
+    7: use ta::Next;
+    8: 
+    9: const TICK_SIZE: f64 = 0.00000001;
+   10: const QTY_STEP: f64 = 0.00000001;
+   11: const FRACTAL_LOOKBACK: usize = 5;
+   12: const MAX_FRACTALS: usize = 20;
+  326:             let buffer = price * LEVEL_BUFFER_PCT;
+  327:             let sl_dist = ((price - support) + buffer).max(price * MIN_SL_DIST_PCT);
+  328:             let entry = round_to_tick(price, TICK_SIZE);
+  329:             let sl = round_to_tick(price - sl_dist, TICK_SIZE);
+  330:             let tp = round_to_tick(price + sl_dist * self.rr_ratio, TICK_SIZE);
+  331:             let Some(eff_rr) = self.net_rr(entry, sl, tp, true) else {
+  332:                 return Ok(None);
+  343:                 self.fee_rate * 2.0,
+  344:             );
+  345:             let quantity = floor_to_step(raw_qty, QTY_STEP);
+  346:             if quantity <= 0.0 {
+  347:                 self.n_blocked_qty += 1;
+  375:             let buffer = price * LEVEL_BUFFER_PCT;
+  376:             let sl_dist = ((resistance - price) + buffer).max(price * MIN_SL_DIST_PCT);
+  377:             let entry = round_to_tick(price, TICK_SIZE);
+  378:             let sl = round_to_tick(price + sl_dist, TICK_SIZE);
+  379:             let tp = round_to_tick(price - sl_dist * self.rr_ratio, TICK_SIZE);
+  380:             let Some(eff_rr) = self.net_rr(entry, sl, tp, false) else {
+  381:                 return Ok(None);
+  392:                 self.fee_rate * 2.0,
+  393:             );
+  394:             let quantity = floor_to_step(raw_qty, QTY_STEP);
+  395:             if quantity <= 0.0 {
+  396:                 self.n_blocked_qty += 1;
+  ---- src\strategies\gold_session_trader.rs
+   29: use std::collections::VecDeque;
+   30: 
+   31: const TICK_SIZE: f64 = 0.00000001;
+   32: const QTY_STEP: f64 = 0.00000001;
+   33: 
+   34: /// Часы UTC для торговли (London session key times)
+  229:         };
+  230: 
+  231:         let entry = round_to_tick(price, TICK_SIZE);
+  232:         let sl = round_to_tick(sl_price, TICK_SIZE);
+  233:         let tp = round_to_tick(tp_price, TICK_SIZE);
+  234: 
+  235:         // 8. Net RR check
+  247:             self.balance, entry, sl, self.risk_per_trade_pct, self.fee_rate * 2.0,
+  248:         );
+  249:         let quantity = floor_to_step(raw_qty, QTY_STEP);
+  250:         if quantity <= 0.0 { return Ok(None); }
+  251: 
+  ---- src\strategies\keltner_dca.rs
+   27: use std::collections::VecDeque;
+   28: 
+   29: const TICK_SIZE: f64 = 0.01;
+   30: const QTY_STEP: f64 = 0.001;
+   31: 
+   32: /// Keltner EMA period
+  258:         // This DCA order gets 'fraction' of full size
+  259:         let dca_qty = full_qty * fraction;
+  260:         floor_to_step(dca_qty, QTY_STEP)
+  261:     }
+  262: 
+  385: 
+  386:             let side = "SELL"; // LONG-only → exit is always SELL
+  387:             let entry = round_to_tick(kline.close, TICK_SIZE);
+  388:             tracing::info!(
+  389:                 "🎯 KeltnerDCA EXIT {} | reason={} | avg_entry={:.4} close={:.4} qty={:.6}",
+  ... (capped)
+
+##### P18-tree-protective :: tree src  pattern=/place_protective/
+##### total: 14 match(es) in 8 file(s)
+  src\exchange\binance_futures.rs :: 1
+  src\exchange\binance_rest.rs :: 1
+  src\exchange\bybit_futures.rs :: 1
+  src\exchange\okx_futures.rs :: 1
+  src\exchange\resilient_client.rs :: 2
+  src\exchange\traits.rs :: 1
+  src\execution\execution_engine.rs :: 6
+  src\main.rs :: 1
+  ---- src\exchange\binance_futures.rs
+  159:     // это и есть фактический tickSize Algo-эндпоинта.
+  160:     // Классический /fapi/v1/order остаётся финальным fallback'ом.
+  161:     // ============================================================
+  162:     async fn place_protective_order(
+  163:         &self,
+  164:         symbol: &str,
+  165:         side: &str,
+  ---- src\exchange\binance_rest.rs
+  342:     // осознанный fail-safe Err (спот-боты у нас не используются,
+  343:     // а молчаливое отсутствие защиты хуже явной ошибки).
+  344:     // ============================================================
+  345:     async fn place_protective_order(
+  346:         &self,
+  347:         symbol: &str,
+  348:         _side: &str,
+  ---- src\exchange\bybit_futures.rs
+  328:         Ok(Self::parse_order_result(result, symbol, bybit_side))
+  329:     }
+  330: 
+  331:     async fn place_protective_order(
+  332:         &self,
+  333:         symbol: &str,
+  334:         side: &str,
+  ---- src\exchange\okx_futures.rs
+  349:         })
+  350:     }
+  351: 
+  352:     async fn place_protective_order(
+  353:         &self,
+  354:         symbol: &str,
+  355:         side: &str,
+  ---- src\exchange\resilient_client.rs
+  240:         self.inner.get_order_commission(symbol, order_id).await
+  241:     }
+  242: 
+  243:     async fn place_protective_order(
+  244:         &self,
+  245:         symbol: &str,
+  246:         side: &str,
+  250:     ) -> Result<OrderResult> {
+  251:         // ⚠️ НЕТ retry — повторная отправка = дубликат SL/TP ордера.
+  252:         self.inner
+  253:             .place_protective_order(symbol, side, stop, trigger_price, client_order_id)
+  254:             .await
+  255:     }
+  256: 
+  ---- src\exchange\traits.rs
+   27:     /// quantity НЕ указывается (биржа отвергает связку).
+   28:     /// client_order_id: префикс "pr_" помечает ордер как защитный —
+   29:     /// sweep при shutdown не снимает их при живой позиции.
+   30:     async fn place_protective_order(
+   31:         &self,
+   32:         symbol: &str,
+   33:         side: &str,
+  ---- src\execution\execution_engine.rs
+  632:     // ============================================================
+  633:     // 🔧 ЭТАП B: поставить защитные ордера после входа.
+  634:     // ============================================================
+  635:     async fn place_protective_orders(
+  636:         &self,
+  637:         rest: &Arc<dyn ExchangeClient>,
+  638:         signal: &Signal,
+  652:                     return;
+  653:                 }
+  654:                 match rest
+  655:                     .place_protective_order(
+  656:                         &signal.symbol,
+  657:                         &close_side,
+  658:                         true,
+  704:                     return;
+  705:                 }
+  706:                 match rest
+  707:                     .place_protective_order(
+  708:                         &signal.symbol,
+  709:                         &close_side,
+  710:                         false,
+ 1022:                     }
+ 1023:                     let close_side = signal.side.clone();
+ 1024:                     match rest
+ 1025:                         .place_protective_order(
+ 1026:                             &signal.symbol,
+ 1027:                             &close_side,
+ 1028:                             true,
+ 1049:                                 self.config.name, e
+ 1050:                             );
+ 1051:                             if let Ok(o) = rest
+ 1052:                                 .place_protective_order(
+ 1053:                                     &signal.symbol, &close_side, true, new_sl, None,
+ 1054:                                 )
+ 1055:                                 .await
+  ... (capped)

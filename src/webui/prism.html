@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>PRISM — 3D-деск агентов</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#020617;font-family:'Segoe UI',Consolas,monospace;color:#e2e8f0}
+  #hud{position:fixed;top:12px;left:12px;background:rgba(2,6,23,.85);border:1px solid #164e63;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.55;min-width:280px;z-index:5}
+  #hud b{color:#7dd3e8}
+  #back{position:fixed;top:12px;right:12px;z-index:5}
+  #back a{color:#7dd3e8;text-decoration:none;background:rgba(2,6,23,.85);border:1px solid #334155;border-radius:8px;padding:6px 12px}
+  #panel{position:fixed;bottom:12px;left:12px;background:rgba(2,6,23,.88);border:1px solid #334155;border-radius:10px;padding:12px 16px;font-size:13px;display:none;min-width:280px;line-height:1.6;z-index:5}
+  #panel h3{margin:0 0 6px;color:#a5b4fc}
+  #hint{position:fixed;bottom:12px;right:12px;font-size:11px;color:#475569;z-index:5}
+  #msg{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-size:14px;color:#64748b}
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>SCALPING AGENTS // PRISM</b><br>
+  <span id="d"></span>
+</div>
+<div id="back"><a href="/">← Дашборд</a></div>
+<div id="panel"><h3 id="p-name"></h3><div id="p-body"></div></div>
+<div id="hint">drag — вращение · колесо — зум · клик по узлу — инспект</div>
+<div id="msg">Загрузка данных /api/dashboard...</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// ================== ТОПОЛОГИЯ: роли нашего бота ==================
+// Ядро в центре; вокруг — 4 контура бота. Связи = поток сигнала/действия.
+const AGENTS = [
+  { id:'kernel', name:'KERNEL',    role:'Rust-процесс',  band:0x93c5fd, pos:[0,0,0],
+    desc:'main.rs: супервизор (3 попытки), 30с-цикл, reconciliation (старт+5мин), sweep при shutdown, TimeSync' },
+  { id:'ws',     name:'WS HUB',    role:'Scout — глаза', band:0x22d3ee, pos:[0,9,0],
+    desc:'bookTicker + kline-поллер(REST). Lifetime-backoff (чистые сессии сбрасывают), PONG-детектор, RST-переживание' },
+  { id:'strat',  name:'STRATEGY',  role:'Analyst',       band:0xa78bfa, pos:[9,4.5,0],
+    desc:'Двусторонний momentum (BUY/SELL): 8 гейтов — EMA20, flow≥55%, micro-price, ATR-покрытие, wide-spread, spoof, cluster, tilt. MFE-таргеты TP=0.144%/SL=0.08%' },
+  { id:'risk',   name:'RISK',      role:'Validator',     band:0xf43f5e, pos:[0,4.5,9],
+    desc:'PROP-GUARD (пик эквити, персист), EV-стоп@30, CB@3 лоссов, daily-loss, режимы GROWTH/SURVIVAL (rm 1.0/0.5)' },
+  { id:'exec',   name:'EXECUTION', role:'Executor',      band:0xfbbf24, pos:[-9,4.5,0],
+    desc:'momentum→MARKET, spread→GTX. Algo-API защиты SL/TP (pr_*), ensure_terminal, resolve_by_client_id, pre-entry reconcile, бан-гейт' },
+  { id:'state',  name:'STATE',     role:'Synth',         band:0x34d399, pos:[0,4.5,-9],
+    desc:'SQLite-позиции, R-менеджмент (BE@1R, chandelier, Exit_UpdateSL→подтяжка), funding, fee-модель taker/maker' },
+];
+const LINKS = [['ws','strat'],['strat','risk'],['risk','exec'],['exec','state'],['state','strat'],
+               ['ws','kernel'],['kernel','risk'],['kernel','exec'],['kernel','state']];
+
+// ================== ДАННЫЕ из /api/dashboard ==================
+let DATA=null;
+async function load(){
+  try{
+    const r=await fetch('/api/dashboard',{cache:'no-store'});
+    DATA=await r.json();
+    document.getElementById('msg').style.display='none';
+    renderHud(); scheduleFire();
+  }catch(e){
+    document.getElementById('msg').textContent='Нет связи с /api/dashboard — бот остановлен?';
+  }
+}
+function fmt(v){return (v>=0?'+':'')+v.toFixed(2);}
+function renderHud(){
+  const b=DATA.bots&&DATA.bots[0]; if(!b)return;
+  const r=b.risk||{};
+  document.getElementById('d').innerHTML=
+    `<b>${b.name}</b> ${b.symbol} ${b.market==='futures'?'FUT':''} ${b.simulate?'SIM':'REAL'}<br>`+
+    `PnL: <span style="color:${(r.pnl||0)>=0?'#34d399':'#f87171'}">${fmt(r.pnl||0)} USDT</span> | `+
+    `Сделок: ${r.trades||0} (WR ${(r.win_rate||0).toFixed(0)}%)<br>`+
+    `Баланс: ${b.balance!=null?(+b.balance).toFixed(2):'—'} USDT | `+
+    `Позиций: ${(b.positions||[]).length}<br>`+
+    `SUSPENDED: ${r.suspended?'ДА — '+((r.suspend_reason||'').slice(0,40)):'нет'}`;
+}
+
+// ================== ФОТОНЫ: событийные ==================
+let fireQueue={kernel:0,ws:0,strat:0,risk:0,exec:0,state:0};
+function scheduleFire(){
+  if(!DATA)return;
+  const b=DATA.bots&&DATA.bots[0]; if(!b)return;
+  const r=b.risk||{};
+  // каждый бот-пульс →.kernel; suspended → риск горит; позиция → exec/state
+  fireQueue.kernel=Math.min(fireQueue.kernel+1,3);
+  if(r.suspended) fireQueue.risk=Math.min(fireQueue.risk+2,3);
+  if((b.positions||[]).length){ fireQueue.exec=2; fireQueue.state=2; }
+  const prevT=window._lastTrades??(r.trades||0);
+  if((r.trades||0)>prevT){ fireQueue.strat=2; fireQueue.exec=2; }
+  window._lastTrades=r.trades||0;
+  setTimeout(scheduleFire,4000);
+}
+
+// ================== THREE ==================
+const scene=new THREE.Scene();
+scene.fog=new THREE.FogExp2(0x020617,0.008);
+const cam=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,500);
+cam.position.set(0,14,30);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls=new THREE.OrbitControls(cam,renderer.domElement);
+controls.enableDamping=true;controls.dampingFactor=.06;
+scene.add(new THREE.AmbientLight(0x334155,1.2));
+const key=new THREE.PointLight(0x7dd3e8,1.6);key.position.set(0,25,0);scene.add(key);
+const grid=new THREE.GridHelper(46,23,0x0e7490,0x0c2d48);
+grid.position.y=-6;scene.add(grid);
+
+const nodes={};
+AGENTS.forEach(a=>{
+  const g=new THREE.Group();
+  const R=a.id==='kernel'?2.2:1.4;
+  const core=new THREE.Mesh(
+    new THREE.IcosahedronGeometry(R,1),
+    new THREE.MeshStandardMaterial({color:a.band,emissive:a.band,emissiveIntensity:.55,metalness:.35,roughness:.25}));
+  const shell=new THREE.Mesh(
+    new THREE.IcosahedronGeometry(R+.55,1),
+    new THREE.MeshBasicMaterial({color:a.band,wireframe:true,transparent:true,opacity:.25}));
+  g.add(core);g.add(shell);
+  g.position.set(...a.pos);
+  const c=document.createElement('canvas');c.width=256;c.height=64;
+  const x=c.getContext('2d');x.font='bold 30px Consolas';
+  x.fillStyle='#'+a.band.toString(16).padStart(6,'0');x.textAlign='center';x.fillText(a.name,128,42);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true}));
+  s.scale.set(9,2.25,1);s.position.y=a.id==='kernel'?3.4:2.6;g.add(s);
+  scene.add(g);
+  nodes[a.id]={group:g,core,shell,heat:0,info:a};
+});
+const linkObjs=[];
+LINKS.forEach(([a,b])=>{
+  const p1=new THREE.Vector3(...AGENTS.find(x=>x.id===a).pos);
+  const p2=new THREE.Vector3(...AGENTS.find(x=>x.id===b).pos);
+  const line=new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([p1,p2]),
+    new THREE.LineBasicMaterial({color:0x155e75,transparent:true,opacity:.5}));
+  scene.add(line);
+});
+const photons=[];
+const photonGeo=new THREE.SphereGeometry(.22,10,10);
+function firePhoton(fromId,toId,band){
+  const p1=new THREE.Vector3(...AGENTS.find(x=>x.id===fromId).pos);
+  const m=new THREE.Mesh(photonGeo,new THREE.MeshBasicMaterial({color:band||nodes[toId].info.band}));
+  m.position.copy(p1);scene.add(m);
+  photons.push({mesh:m,from:p1,to:new THREE.Vector3(...AGENTS.find(x=>x.id===toId).pos),t:0});
+  nodes[fromId].heat=Math.min(nodes[fromId].heat+.7,2);
+  nodes[toId].heat=Math.min(nodes[toId].heat+.9,2.4);
+}
+// расстрел очереди (событийные фотоны)
+setInterval(()=>{
+  const chain=['kernel','ws','strat','risk','exec','state'];
+  for(const id of chain){
+    while(fireQueue[id]>0){
+      fireQueue[id]--;
+      const i=chain.indexOf(id);
+      if(i+1<chain.length) firePhoton(id,chain[i+1]);
+      else firePhoton(id,'kernel');
+    }
+  }
+},700);
+
+// инспект
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
+addEventListener('click',e=>{
+  mouse.x=e.clientX/innerWidth*2-1;mouse.y=-(e.clientY/innerHeight)*2+1;
+  ray.setFromCamera(mouse,cam);
+  for(const id in nodes){
+    if(ray.intersectObject(nodes[id].core).length){
+      const a=nodes[id].info;
+      document.getElementById('panel').style.display='block';
+      document.getElementById('p-name').textContent=`${a.name} — ${a.role}`;
+      document.getElementById('p-body').innerHTML=a.desc;
+      nodes[id].heat=2.2;break;
+    }
+  }
+});
+
+// ================== ЦИКЛ ==================
+let last=performance.now();
+function animate(now){
+  requestAnimationFrame(animate);
+  const dt=Math.min((now-last)/1000,.1);last=now;
+  for(const id in nodes){
+    const n=nodes[id];
+    n.heat=Math.max(n.heat-dt*.8,0);
+    n.core.rotation.y+=dt*.6;n.core.rotation.x+=dt*.25;
+    n.shell.rotation.y-=dt*.3;
+    n.core.scale.setScalar(1+n.heat*.12);
+    n.core.material.emissiveIntensity=.4+n.heat*.45;
+    n.shell.material.opacity=.18+n.heat*.22;
+    n.group.position.y=n.info.pos[1]+Math.sin(now/1400+n.info.pos[0])*.35;
+  }
+  for(let i=photons.length-1;i>=0;i--){
+    const p=photons[i];p.t+=dt*1.6;
+    if(p.t>=1){scene.remove(p.mesh);photons.splice(i,1);continue;}
+    p.mesh.position.lerpVectors(p.from,p.to,p.t);
+    p.mesh.scale.setScalar(1+.6*Math.sin(p.t*Math.PI));
+  }
+  controls.update();
+  renderer.render(scene,cam);
+}
+requestAnimationFrame(animate);
+setInterval(load,5000);
+load();
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+</script>
+</body>
+</html>

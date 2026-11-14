@@ -1,0 +1,508 @@
+use super::{Signal, SignalFilter, Strategy};
+use crate::utils::math::{calc_position_size_with_fees, floor_to_step, round_to_tick};
+use crate::websocket::WebSocketMessage;
+use anyhow::Result;
+use std::collections::VecDeque;
+use ta::indicators::RelativeStrengthIndex;
+use ta::Next;
+
+const TICK_SIZE: f64 = 0.00000001;
+const QTY_STEP: f64 = 0.00000001;
+const FRACTAL_LOOKBACK: usize = 5;
+const MAX_FRACTALS: usize = 20;
+/// Буфер за фрактальный уровень (0.05% от цены) — SL ставится ЗА уровнем,
+/// чтобы фитиль не снял стоп ровно на уровне.
+const LEVEL_BUFFER_PCT: f64 = 0.0005;
+/// Пол дистанции стопа (0.3% от цены) — защита от слишком тесных стопов.
+const MIN_SL_DIST_PCT: f64 = 0.003;
+/// ✅ BUG#3-фикс: минимум закрытых свечей до генерации сигналов.
+/// RSI(14)+фракталы(11)+тренд(13) должны прогреться. Backfill-поллер
+/// отдаёт 250 свечей сразу — порог проходится мгновенно.
+const MIN_CANDLES_WARMUP: u64 = 30;
+
+/// ============================================================
+/// ✅ BUG#3 (0 сделок) — РАЗБОР ПРИЧИНЫ
+/// ============================================================
+/// Старые параметры давали математически НЕВОЗМОЖНЫЙ сигнал:
+///
+///   net_rr = (rr·d − 2f·P) / (d + 2f·P),   rr = 2.0, f = 0.0005
+///   условие net_rr ≥ min_net_rr = 1.5  ⟺  d ≥ 10f·P = 0.5% от цены
+///
+/// При этом поиск поддержки был ограничен 0.5% от цены, а пол стопа —
+/// 0.3%:  d ∈ [0.3%; 0.5%)  →  net_rr < 1.5 ВСЕГДА. Ни одна свеча не
+/// могла пройти фильтр — 0 сделок по построению, а не «рынок не дал».
+/// Дополнительно RSI 25/75 — экстремальная зона (единицы свечей в день),
+/// а фильтр флэта 1.0% за 12 свечей конфликтовал с моментом входа.
+///
+/// Новая калибровка:
+///   RSI 30/70, поиск уровня до 1.2%, min_net_rr 1.2 (из конфига),
+///   SL = уровень ± буфер 0.05%, пол 0.3% → d ∈ [0.3%; 1.25%] →
+///   net_rr ∈ [1.25; 1.78] — проходит при min_net_rr = 1.2, а при
+///   min_net_rr = 1.5 (если задан в конфиге) проходит полоса
+///   d ∈ [0.5%; 1.25%] — тоже достижимо.
+/// ============================================================
+pub struct BounceTraderStrategy {
+    symbol: String,
+    balance: f64,
+    risk_per_trade_pct: f64,
+    fee_rate: f64,
+    rr_ratio: f64,
+    min_net_rr: f64,
+    rsi_oversold: f64,
+    rsi_overbought: f64,
+    trend_threshold_pct: f64,
+    trend_window: usize,
+    support_search_pct: f64,
+    highs: VecDeque<f64>,
+    lows: VecDeque<f64>,
+    closes: VecDeque<f64>,
+    timestamps: VecDeque<i64>,
+    max_history: usize,
+    rsi: RelativeStrengthIndex,
+    last_rsi: f64,
+    fractal_highs: VecDeque<f64>,
+    fractal_lows: VecDeque<f64>,
+    filter: SignalFilter,
+    last_kline_ts: i64,
+    n_candles: u64,
+    n_backfill: u64,
+    n_fractals_high: u64,
+    n_fractals_low: u64,
+    n_blocked_warmup: u64,
+    n_blocked_trending: u64,
+    n_blocked_no_fractal: u64,
+    n_blocked_rsi_neutral: u64,
+    n_blocked_net_rr: u64,
+    n_blocked_qty: u64,
+    n_signals: u64,
+    // ✅ P23: slippage-модель по живому bookTicker (аудит: «спред не моделируется»)
+    last_bid: f64,
+    last_ask: f64,
+    max_spread_pct: f64,
+    n_spread_block: u64,
+}
+
+impl BounceTraderStrategy {
+    pub fn new(symbol: String, balance: f64, risk_pct: f64, fee_rate: f64) -> Self {
+        Self {
+            symbol,
+            balance,
+            risk_per_trade_pct: risk_pct,
+            fee_rate,
+            rr_ratio: 2.0,
+            min_net_rr: 1.2,           // ✅ было 1.5 — см. разбор BUG#3 выше
+            rsi_oversold: 30.0,        // ✅ было 25.0 — экстремально редко
+            rsi_overbought: 70.0,      // ✅ было 75.0
+            trend_threshold_pct: 1.5,  // ✅ было 1.0 — конфликтовало с RSI<25
+            trend_window: 12,
+            support_search_pct: 0.012, // ✅ было 0.005 — вместе с min_net_rr=1.5 давало 0 сделок
+            highs: VecDeque::with_capacity(200),
+            lows: VecDeque::with_capacity(200),
+            closes: VecDeque::with_capacity(200),
+            timestamps: VecDeque::with_capacity(200),
+            max_history: 200,
+            rsi: RelativeStrengthIndex::new(14).unwrap(),
+            last_rsi: 50.0,
+            fractal_highs: VecDeque::with_capacity(MAX_FRACTALS),
+            fractal_lows: VecDeque::with_capacity(MAX_FRACTALS),
+            filter: SignalFilter::new(120, 0.15),
+            last_kline_ts: 0,
+            n_candles: 0,
+            n_backfill: 0,
+            n_fractals_high: 0,
+            n_fractals_low: 0,
+            n_blocked_warmup: 0,
+            n_blocked_trending: 0,
+            n_blocked_no_fractal: 0,
+            n_blocked_rsi_neutral: 0,
+            n_blocked_net_rr: 0,
+            n_blocked_qty: 0,
+            n_signals: 0,
+            last_bid: 0.0,
+            last_ask: 0.0,
+            max_spread_pct: std::env::var("P23_MAX_SPREAD_PCT")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|v| if v > 0.0 { v } else { f64::INFINITY })
+                .unwrap_or(0.0010),
+            n_spread_block: 0,
+        }
+    }
+
+    pub fn with_rr(mut self, rr: f64, min_net_rr: f64) -> Self {
+        self.rr_ratio = rr;
+        self.min_net_rr = min_net_rr;
+        self
+    }
+
+    /// ✅ BUG#3-фикс: настраиваемые зоны RSI (config: rsi_oversold/rsi_overbought)
+    pub fn with_rsi(mut self, oversold: f64, overbought: f64) -> Self {
+        self.rsi_oversold = oversold;
+        self.rsi_overbought = overbought;
+        self
+    }
+
+    /// ✅ Настраиваемый фильтр флэта: |momentum за N свечей| < threshold%
+    /// (config: trend_threshold_pct / trend_window). 0 отключает фильтр.
+    pub fn with_trend_filter(mut self, threshold_pct: f64, window: usize) -> Self {
+        self.trend_threshold_pct = threshold_pct;
+        self.trend_window = window.max(1);
+        self
+    }
+
+    /// ✅ BUG#3-фикс: радиус поиска фрактального уровня, доля от цены
+    /// (config: support_search_pct в ПРОЦЕНТАХ, напр. 1.2 → 0.012)
+    pub fn with_search_pct(mut self, fraction: f64) -> Self {
+        self.support_search_pct = fraction;
+        self
+    }
+
+    /// Единая точка пополнения истории (live + backfill).
+    /// Дедуп по монотонности close_time, RSI и фракталы считаются здесь.
+    fn push_candle(&mut self, high: f64, low: f64, close: f64, ts: i64) {
+        if self.timestamps.back().map(|t| *t >= ts).unwrap_or(false) {
+            return; // дубль/не по возрастанию — пропускаем
+        }
+        self.highs.push_back(high);
+        self.lows.push_back(low);
+        self.closes.push_back(close);
+        self.timestamps.push_back(ts);
+        while self.highs.len() > self.max_history {
+            self.highs.pop_front();
+            self.lows.pop_front();
+            self.closes.pop_front();
+            self.timestamps.pop_front();
+        }
+        self.last_rsi = self.rsi.next(close);
+        self.detect_fractals();
+    }
+
+    fn detect_fractals(&mut self) {
+        let n = self.highs.len();
+        if n < FRACTAL_LOOKBACK * 2 + 1 {
+            return;
+        }
+        let candidate_idx = n - 1 - FRACTAL_LOOKBACK;
+        if candidate_idx < FRACTAL_LOOKBACK {
+            return;
+        }
+        let high_candidate = self.highs[candidate_idx];
+        let low_candidate = self.lows[candidate_idx];
+        let is_fractal_high = (candidate_idx - FRACTAL_LOOKBACK..candidate_idx + FRACTAL_LOOKBACK + 1)
+            .filter(|&i| i != candidate_idx)
+            .all(|i| self.highs[candidate_idx] > self.highs[i]);
+        let is_fractal_low = (candidate_idx - FRACTAL_LOOKBACK..candidate_idx + FRACTAL_LOOKBACK + 1)
+            .filter(|&i| i != candidate_idx)
+            .all(|i| self.lows[candidate_idx] < self.lows[i]);
+        if is_fractal_high {
+            self.fractal_highs.push_back(high_candidate);
+            while self.fractal_highs.len() > MAX_FRACTALS {
+                self.fractal_highs.pop_front();
+            }
+            self.n_fractals_high += 1;
+        }
+        if is_fractal_low {
+            self.fractal_lows.push_back(low_candidate);
+            while self.fractal_lows.len() > MAX_FRACTALS {
+                self.fractal_lows.pop_front();
+            }
+            self.n_fractals_low += 1;
+        }
+    }
+
+    fn is_ranging(&self) -> bool {
+        if self.trend_threshold_pct <= 0.0 {
+            return true; // фильтр отключён в конфиге
+        }
+        if self.closes.len() < self.trend_window + 1 {
+            return false;
+        }
+        let recent = self.closes.len() - 1;
+        let past = recent - self.trend_window;
+        let momentum_pct =
+            (self.closes[recent] - self.closes[past]).abs() / self.closes[past] * 100.0;
+        momentum_pct < self.trend_threshold_pct
+    }
+
+    /// ✅ BUG#3-фикс: ближайший фрактальный уровень с ЛЮБОЙ стороны цены.
+    /// Старая логика была перекошена: для BUY сначала искался уровень ВЫШЕ
+    /// цены (в 0.5%), и только если его нет — ниже (в 0.2%). Теперь просто
+    /// ближайший в радиусе support_search_pct — уровень и есть ориентир SL.
+    fn find_nearby_level(&self, levels: &VecDeque<f64>, price: f64) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        let mut best_dist = f64::INFINITY;
+        for &lvl in levels {
+            let dist = (price - lvl).abs() / price;
+            if dist <= self.support_search_pct && dist < best_dist {
+                best_dist = dist;
+                best = Some(lvl);
+            }
+        }
+        best
+    }
+
+    fn net_rr(&self, entry: f64, sl: f64, tp: f64, is_long: bool) -> Option<f64> {
+        let fee_cost = 2.0 * self.fee_rate * entry;
+        // ✅ P23: полная стоимость спреда за круг (вход по ask, выход по bid).
+        // До первого bookTicker спред неизвестен — модель как раньше.
+        let spread_cost = if self.last_bid > 0.0 && self.last_ask > self.last_bid {
+            self.last_ask - self.last_bid
+        } else {
+            0.0
+        };
+        let (gross_profit, gross_loss) = if is_long {
+            (tp - entry - spread_cost, entry - sl + spread_cost)
+        } else {
+            (entry - tp - spread_cost, sl - entry + spread_cost)
+        };
+        let net_profit = gross_profit - fee_cost;
+        let net_loss = gross_loss + fee_cost;
+        if net_loss <= 0.0 || net_profit <= 0.0 {
+            return None;
+        }
+        Some(net_profit / net_loss)
+    }
+
+    /// ✅ P23: slippage-guard — true = спред шире лимита, вход запрещён
+    fn spread_too_wide(&mut self) -> bool {
+        if self.last_bid > 0.0 && self.last_ask > self.last_bid {
+            let mid = (self.last_bid + self.last_ask) * 0.5;
+            if (self.last_ask - self.last_bid) / mid > self.max_spread_pct {
+                self.n_spread_block += 1;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl Strategy for BounceTraderStrategy {
+    fn name(&self) -> &str {
+        "BounceTrader"
+    }
+
+    /// ✅ П3: единственная стратегия, явно попросившая backfill-историю
+    /// для мгновенного прогрева RSI/фракталов/тренд-фильтра.
+    /// Сигналы по backfill всё равно запрещены внутри process() —
+    /// прогрев безопасен.
+    fn wants_backfill(&self) -> bool {
+        true
+    }
+
+    fn notify_position_open(&mut self) {
+        self.filter.on_position_opened();
+    }
+
+    fn notify_position_closed(&mut self, _pnl: f64) {
+        self.filter.on_position_closed(self.last_kline_ts);
+    }
+
+    fn process(&mut self, msg: &WebSocketMessage) -> Result<Option<Signal>> {
+        // ✅ P23: ловим живой спред из bookTicker (guard входа + стоимость спреда в net_rr)
+        if let WebSocketMessage::BookTicker(b) = msg {
+            if b.symbol.eq_ignore_ascii_case(&self.symbol)
+                && b.best_bid > 0.0
+                && b.best_ask > b.best_bid
+            {
+                self.last_bid = b.best_bid;
+                self.last_ask = b.best_ask;
+            }
+            return Ok(None);
+        }
+        let kline = match msg {
+            WebSocketMessage::Kline(k) => k,
+            _ => return Ok(None),
+        };
+        if !kline.symbol.eq_ignore_ascii_case(&self.symbol) {
+            return Ok(None);
+        }
+        if !kline.is_closed {
+            return Ok(None);
+        }
+
+        // ✅ П3: backfill-свечи (история от REST-поллера, 250 шт при старте) —
+        // ТОЛЬКО прогрев индикаторов. Сигналы по старым ценам запрещены:
+        // вход исполнился бы по текущему рынку против цены сигнала.
+        if kline.is_backfill {
+            self.n_backfill += 1;
+            self.push_candle(kline.high, kline.low, kline.close, kline.timestamp);
+            return Ok(None);
+        }
+
+        if kline.timestamp == self.last_kline_ts {
+            return Ok(None);
+        }
+        self.push_candle(kline.high, kline.low, kline.close, kline.timestamp);
+        self.last_kline_ts = kline.timestamp;
+        self.n_candles += 1;
+
+        let price = kline.close;
+
+        // ✅ BUG#3-фикс: прогрев — не торговать на «сырых» индикаторах
+        // ✅ V3.2: прогрев засчитывается, если история УЖЕ пришла от
+        // backfill-поллера (>=100 свечей: RSI/фракталы/тренд прогреты).
+        // Раньше требовалось 30 ЖИВЫХ часов простоя при прогретых
+        // индикаторах — мёртвое ожидание на 1h TF.
+        if self.n_candles < MIN_CANDLES_WARMUP && self.n_backfill < 100 {
+            self.n_blocked_warmup += 1;
+            return Ok(None);
+        }
+        if !self.filter.can_signal(price, kline.timestamp) {
+            return Ok(None);
+        }
+        if !self.is_ranging() {
+            self.n_blocked_trending += 1;
+            return Ok(None);
+        }
+
+        if self.last_rsi < self.rsi_oversold {
+            // ===== LONG: отскок от фрактальной поддержки =====
+            let Some(support) = self.find_nearby_level(&self.fractal_lows, price) else {
+                self.n_blocked_no_fractal += 1;
+                return Ok(None);
+            };
+            // SL — ЗА уровнем (ниже поддержки) + буфер, пол 0.3%.
+            // Если уровень проколот (support выше цены) — работает пол.
+            let buffer = price * LEVEL_BUFFER_PCT;
+            let sl_dist = ((price - support) + buffer).max(price * MIN_SL_DIST_PCT);
+            let entry = round_to_tick(price, TICK_SIZE);
+            let sl = round_to_tick(price - sl_dist, TICK_SIZE);
+            let tp = round_to_tick(price + sl_dist * self.rr_ratio, TICK_SIZE);
+            // ✅ P23: slippage-guard — спред шире лимита = вход запрещён
+            if self.spread_too_wide() {
+                return Ok(None);
+            }
+            let Some(eff_rr) = self.net_rr(entry, sl, tp, true) else {
+                return Ok(None);
+            };
+            if eff_rr < self.min_net_rr {
+                self.n_blocked_net_rr += 1;
+                return Ok(None);
+            }
+            let raw_qty = calc_position_size_with_fees(
+                self.balance,
+                entry,
+                sl,
+                self.risk_per_trade_pct,
+                self.fee_rate * 2.0,
+            );
+            let quantity = floor_to_step(raw_qty, QTY_STEP);
+            if quantity <= 0.0 {
+                self.n_blocked_qty += 1;
+                return Ok(None);
+            }
+            self.filter.on_signal(entry, kline.timestamp);
+            self.n_signals += 1;
+            tracing::info!(
+                "BounceTrader BUY | RSI={:.1} support={:.4} entry={:.4} SL={:.4} TP={:.4} qty={:.6} netRR={:.2}",
+                self.last_rsi, support, entry, sl, tp, quantity, eff_rr
+            );
+            return Ok(Some(Signal {
+                symbol: kline.symbol.clone(),
+                side: "BUY".to_string(),
+                price: entry,
+                quantity,
+                strategy_name: self.name().to_string(),
+                leverage: 1.0,
+                stop_loss: Some(sl),
+                take_profit: Some(tp),
+                atr_hint: 0.0,
+                entry_spread: 0.0,
+            }));
+        } else if self.last_rsi > self.rsi_overbought {
+            // ===== SHORT: отскок от фрактального сопротивления =====
+            let Some(resistance) = self.find_nearby_level(&self.fractal_highs, price) else {
+                self.n_blocked_no_fractal += 1;
+                return Ok(None);
+            };
+            // SL — ЗА уровнем (выше сопротивления) + буфер, пол 0.3%
+            let buffer = price * LEVEL_BUFFER_PCT;
+            let sl_dist = ((resistance - price) + buffer).max(price * MIN_SL_DIST_PCT);
+            let entry = round_to_tick(price, TICK_SIZE);
+            let sl = round_to_tick(price + sl_dist, TICK_SIZE);
+            let tp = round_to_tick(price - sl_dist * self.rr_ratio, TICK_SIZE);
+            // ✅ P23: slippage-guard — спред шире лимита = вход запрещён
+            if self.spread_too_wide() {
+                return Ok(None);
+            }
+            let Some(eff_rr) = self.net_rr(entry, sl, tp, false) else {
+                return Ok(None);
+            };
+            if eff_rr < self.min_net_rr {
+                self.n_blocked_net_rr += 1;
+                return Ok(None);
+            }
+            let raw_qty = calc_position_size_with_fees(
+                self.balance,
+                entry,
+                sl,
+                self.risk_per_trade_pct,
+                self.fee_rate * 2.0,
+            );
+            let quantity = floor_to_step(raw_qty, QTY_STEP);
+            if quantity <= 0.0 {
+                self.n_blocked_qty += 1;
+                return Ok(None);
+            }
+            self.filter.on_signal(entry, kline.timestamp);
+            self.n_signals += 1;
+            tracing::info!(
+                "BounceTrader SELL | RSI={:.1} resistance={:.4} entry={:.4} SL={:.4} TP={:.4} qty={:.6} netRR={:.2}",
+                self.last_rsi, resistance, entry, sl, tp, quantity, eff_rr
+            );
+            return Ok(Some(Signal {
+                symbol: kline.symbol.clone(),
+                side: "SELL".to_string(),
+                price: entry,
+                quantity,
+                strategy_name: self.name().to_string(),
+                leverage: 1.0,
+                stop_loss: Some(sl),
+                take_profit: Some(tp),
+                atr_hint: 0.0,
+                entry_spread: 0.0,
+            }));
+        } else {
+            self.n_blocked_rsi_neutral += 1;
+        }
+        Ok(None)
+    }
+
+    fn diagnostics(&self) -> Option<String> {
+        Some(format!(
+            "BounceTrader diag | candles={} backfill={} fractals_h={} fractals_l={} signals={} | \
+             warmup_block={} trending_block={} no_fractal={} rsi_neutral={} net_rr_block={} spr_block={} qty_block={} | \
+             RSI={:.1} | rr={} min_net_rr={} rsi[{:.0}/{:.0}] trend<{:.1}%/{}w search={:.2}% fee={:.3}%",
+            self.n_candles,
+            self.n_backfill,
+            self.n_fractals_high,
+            self.n_fractals_low,
+            self.n_signals,
+            self.n_blocked_warmup,
+            self.n_blocked_trending,
+            self.n_blocked_no_fractal,
+            self.n_blocked_rsi_neutral,
+            self.n_blocked_net_rr,
+            self.n_spread_block,
+            self.n_blocked_qty,
+            self.last_rsi,
+            self.rr_ratio,
+            self.min_net_rr,
+            self.rsi_oversold,
+            self.rsi_overbought,
+            self.trend_threshold_pct,
+            self.trend_window,
+            self.support_search_pct * 100.0,
+            self.fee_rate * 100.0
+        ))
+    }
+
+    fn in_position(&self) -> bool {
+        // ✅ P21: Cooldown больше НЕ считается «в позиции».
+        // Фильтр уходит в Cooldown в момент ВЫДАЧИ сигнала (on_signal) — это
+        // анти-флап. Раньше in_position()=true на свежевыданном сигнале
+        // мгновенно само-блокировал его в main.rs («позиция уже открыта»),
+        // и стратегия не могла войти никогда. Anti-flap остаётся в can_signal().
+        matches!(self.filter.state(), super::PositionState::InPosition)
+    }
+}

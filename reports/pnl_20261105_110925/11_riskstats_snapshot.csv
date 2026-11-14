@@ -1,0 +1,5 @@
+bot_name,total_trades,win_trades,loss_trades,realized_pnl,gross_profit,gross_loss,daily_loss_today,last_active_day,suspended,suspend_reason
+btc_bounce,0,0,0,0.0,0.0,0.0,0.0,2026-11-05,0,""
+gold_dca,0,0,0,0.0,0.0,0.0,0.0,2026-11-05,0,""
+inj_liquidity,0,0,0,0.0,0.0,0.0,0.0,2026-11-05,0,""
+tao_momentum,0,0,0,0.0,0.0,0.0,0.0,2026-11-05,0,""

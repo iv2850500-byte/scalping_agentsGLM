@@ -1,0 +1,11 @@
+
+# ===================== appended by P61 (v9 tail) =====================
+try {
+$c61d = 0
+if (Test-Path .\deploy.ps1) { $c61d = (Select-String -Path .\deploy.ps1 -Pattern 'P61/' -AllMatches | ForEach-Object { $_.Matches.Count } | Measure-Object -Sum).Sum }
+if ($null -eq $c61d) { $c61d = 0 }
+$c61b = 0
+if (Test-Path .\build.ps1) { $c61b = (Select-String -Path .\build.ps1 -Pattern 'P61/' -AllMatches | ForEach-Object { $_.Matches.Count } | Measure-Object -Sum).Sum }
+if ($null -eq $c61b) { $c61b = 0 }
+('markers P61/: {0,3}   installed if 5  (deploy auto-stop + unlock-wait; build.ps1 one-command update wrapper)' -f ($c61d + $c61b))
+} catch { ('tail error: {0}' -f $_) }

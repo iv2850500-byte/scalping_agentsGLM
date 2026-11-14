@@ -1,0 +1,51 @@
+[P68] spectrum_lab | fee=0.0005 spread=0.0002 train=2160 test=720 step=720 warm=250 oos=30%
+[P68] data ../p33_build/P33/data/TAOUSDT-1h-450d.csv | bars=10799 dups=0 gaps=0 ohlc_bad=0 zero_vol=0
+[P68] data ../p33_build/P33/data/ETHUSDT-1h-full.csv | bars=10776 dups=0 gaps=1 ohlc_bad=0 zero_vol=0
+[P68] data ../p33_build/P33/data/BTCUSDT-1h-full.csv | bars=10766 dups=0 gaps=1 ohlc_bad=0 zero_vol=0
+[P68] data ../../download/klines/INJUSDT-1h.csv | bars=3000 dups=0 gaps=0 ohlc_bad=0 zero_vol=0
+[P68] registry: hypotheses_registry.json записан ДО оценки
+[H1_range_fade] ../p33_build/P33/data/TAOUSDT-1h-450d.csv | params lookback=40 z=2.5 period=0 volx=0
+[H1_range_fade]   WF (10 фолдов, mean_reversion): n=58 R=+2.29 WR=48.3% PF=1.08 DD=7.29 | folds R>0: 4/10
+[H1_range_fade]   OOS (lock, 30%): n=42 R=-10.26 WR=35.7% (be=47.3%) PF=0.62 DD=12.51 | stress x2: R=-12.96 WR=35.7%
+[H1_range_fade]   GATES: n=ok wr>be+3пп=no folds>=50%=no R_oos>0=no => FAIL
+[H1_range_fade] ../p33_build/P33/data/ETHUSDT-1h-full.csv | params lookback=20 z=2.5 period=0 volx=0
+[H1_range_fade]   WF (10 фолдов, mean_reversion): n=148 R=-26.30 WR=40.5% PF=0.70 DD=29.05 | folds R>0: 1/10
+[H1_range_fade]   OOS (lock, 30%): n=92 R=-15.43 WR=41.3% (be=49.6%) PF=0.71 DD=15.62 | stress x2: R=-24.32 WR=41.3%
+[H1_range_fade]   GATES: n=ok wr>be+3пп=no folds>=50%=no R_oos>0=no => FAIL
+[H1_range_fade] ../p33_build/P33/data/BTCUSDT-1h-full.csv | params lookback=40 z=2.5 period=0 volx=0
+[H1_range_fade]   WF (10 фолдов, mean_reversion): n=214 R=-40.63 WR=40.7% PF=0.68 DD=45.73 | folds R>0: 1/10
+[H1_range_fade]   OOS (lock, 30%): n=96 R=-14.16 WR=43.8% (be=51.4%) PF=0.73 DD=22.74 | stress x2: R=-25.72 WR=42.7%
+[H1_range_fade]   GATES: n=ok wr>be+3пп=no folds>=50%=no R_oos>0=no => FAIL
+[H1_range_fade] ../../download/klines/INJUSDT-1h.csv: недостаточно баров (3000<3130) — пропуск
+[H2_donchian_breakout] ../p33_build/P33/data/TAOUSDT-1h-450d.csv | params lookback=0 z=0 period=55 volx=1.3
+[H2_donchian_breakout]   WF (10 фолдов, breakout): n=144 R=-2.49 WR=35.4% PF=0.97 DD=13.62 | folds R>0: 4/10
+[H2_donchian_breakout]   OOS (lock, 30%): n=62 R=-10.96 WR=29.0% (be=35.4%) PF=0.75 DD=18.25 | stress x2: R=-13.99 WR=29.0%
+[H2_donchian_breakout]   GATES: n=ok wr>be+3пп=no folds>=50%=no R_oos>0=no => FAIL
+[H2_donchian_breakout] ../p33_build/P33/data/ETHUSDT-1h-full.csv | params lookback=0 z=0 period=55 volx=1.3
+[H2_donchian_breakout]   WF (10 фолдов, breakout): n=155 R=-8.18 WR=34.8% PF=0.92 DD=31.50 | folds R>0: 3/10
+[H2_donchian_breakout]   OOS (lock, 30%): n=67 R=-4.27 WR=34.3% (be=36.7%) PF=0.90 DD=15.15 | stress x2: R=-10.00 WR=34.3%
+[H2_donchian_breakout]   GATES: n=ok wr>be+3пп=no folds>=50%=no R_oos>0=no => FAIL
+[H2_donchian_breakout] ../p33_build/P33/data/BTCUSDT-1h-full.csv | params lookback=0 z=0 period=20 volx=1.1
+[H2_donchian_breakout]   WF (10 фолдов, breakout): n=149 R=-3.09 WR=36.9% PF=0.97 DD=16.21 | folds R>0: 4/10
+[H2_donchian_breakout]   OOS (lock, 30%): n=113 R=-9.70 WR=35.4% (be=38.8%) PF=0.87 DD=16.12 | stress x2: R=-22.04 WR=35.4%
+[H2_donchian_breakout]   GATES: n=ok wr>be+3пп=no folds>=50%=no R_oos>0=no => FAIL
+[H2_donchian_breakout] ../../download/klines/INJUSDT-1h.csv: недостаточно баров (3000<3130) — пропуск
+
+[P68] ПОРТФЕЛЬНЫЙ ОВЕРЛЕЙ (корреляция дневных R-серий; гипотеза, не доказательство):
+[P68] corr(H1_range_fade@TAOUSDT-1h-450d.csv, H1_range_fade@ETHUSDT-1h-full.csv) = +0.251 (n_days=46)
+[P68] corr(H1_range_fade@TAOUSDT-1h-450d.csv, H1_range_fade@BTCUSDT-1h-full.csv) = +0.101 (n_days=46)
+[P68] corr(H1_range_fade@TAOUSDT-1h-450d.csv, H2_donchian_breakout@TAOUSDT-1h-450d.csv) = -0.436 (n_days=56)
+[P68] corr(H1_range_fade@TAOUSDT-1h-450d.csv, H2_donchian_breakout@ETHUSDT-1h-full.csv) = -0.077 (n_days=42)
+[P68] corr(H1_range_fade@TAOUSDT-1h-450d.csv, H2_donchian_breakout@BTCUSDT-1h-full.csv) = -0.208 (n_days=52)
+[P68] corr(H1_range_fade@ETHUSDT-1h-full.csv, H1_range_fade@BTCUSDT-1h-full.csv) = +0.379 (n_days=131)
+[P68] corr(H1_range_fade@ETHUSDT-1h-full.csv, H2_donchian_breakout@TAOUSDT-1h-450d.csv) = -0.112 (n_days=90)
+[P68] corr(H1_range_fade@ETHUSDT-1h-full.csv, H2_donchian_breakout@ETHUSDT-1h-full.csv) = -0.533 (n_days=120)
+[P68] corr(H1_range_fade@ETHUSDT-1h-full.csv, H2_donchian_breakout@BTCUSDT-1h-full.csv) = -0.387 (n_days=132)
+[P68] corr(H1_range_fade@BTCUSDT-1h-full.csv, H2_donchian_breakout@TAOUSDT-1h-450d.csv) = -0.171 (n_days=119)
+[P68] corr(H1_range_fade@BTCUSDT-1h-full.csv, H2_donchian_breakout@ETHUSDT-1h-full.csv) = -0.354 (n_days=134)
+[P68] corr(H1_range_fade@BTCUSDT-1h-full.csv, H2_donchian_breakout@BTCUSDT-1h-full.csv) = -0.529 (n_days=150)
+[P68] corr(H2_donchian_breakout@TAOUSDT-1h-450d.csv, H2_donchian_breakout@ETHUSDT-1h-full.csv) = +0.074 (n_days=104)
+[P68] corr(H2_donchian_breakout@TAOUSDT-1h-450d.csv, H2_donchian_breakout@BTCUSDT-1h-full.csv) = +0.295 (n_days=125)
+[P68] corr(H2_donchian_breakout@ETHUSDT-1h-full.csv, H2_donchian_breakout@BTCUSDT-1h-full.csv) = +0.418 (n_days=139)
+
+[P68] DONE: spectrum_report.txt / spectrum_results.json / hypotheses_registry.json

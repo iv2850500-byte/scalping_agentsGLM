@@ -1,0 +1,2509 @@
+﻿P19 harvest started 2026-10-30 11:54:34
+
+##### P19-INVENTORY
+
+Path                                  Length
+----                                  ------
+src\lib.rs                               177
+src\main.rs                            80388
+src\agents\execution_agent.rs            411
+src\agents\mod.rs                        242
+src\agents\risk_agent.rs                2436
+src\agents\state_agent.rs               2389
+src\agents\strategy_agent.rs            1177
+src\bin\analyze_slippage.rs            14767
+src\bin\backtest.rs                    41702
+src\bin\download_bybit_klines.rs        9178
+src\bin\record_bookticker.rs            5715
+src\bin\resample_klines.rs              5019
+src\bin\test_binance.rs                  127
+src\bin\ws_probe.rs                     3917
+src\config\mod.rs                      10000
+src\exchange\binance_futures.rs        25413
+src\exchange\binance_rest.rs           14050
+src\exchange\bybit_futures.rs          20338
+src\exchange\bybit_sign.rs              5586
+src\exchange\funding.rs                 3196
+src\exchange\kline_poller.rs           31174
+src\exchange\mod.rs                     4818
+src\exchange\okx_futures.rs            21286
+src\exchange\okx_sign.rs                1646
+src\exchange\resilient_client.rs       15137
+src\exchange\symbol_filters.rs         15002
+src\exchange\time_sync.rs               3995
+src\exchange\traits.rs                  3132
+src\exchange\user_stream.rs             9314
+src\execution\execution_engine.rs      68775
+src\execution\mod.rs                     103
+src\execution\slippage.rs               1322
+src\metrics\mod.rs                      8030
+src\risk\circuit_breaker.rs             8204
+src\risk\global_risk_manager.rs         5396
+src\risk\mod.rs                        28547
+src\state\mod.rs                          84
+src\state\state_manager.rs             44230
+src\state\trade_journal.rs              2749
+src\strategies\bounce_trader.rs        19844
+src\strategies\gold_session_trader.rs  11128
+src\strategies\keltner_dca.rs          19297
+src\strategies\liquidity_grab.rs       22880
+src\strategies\market_regime.rs         5699
+src\strategies\mod.rs                  10193
+src\strategies\momentum.rs             29633
+src\strategies\momentum_v3.rs          37513
+src\strategies\orderbook_analysis.rs    1018
+src\utils\killfile.rs                    310
+src\utils\math.rs                       3434
+src\utils\mod.rs                         131
+src\utils\rate_limiter.rs               2856
+src\utils\retry.rs                      1729
+src\utils\telegram.rs                   5583
+src\websocket\connection.rs               28
+src\websocket\mod.rs                   41670
+src\websocket\reconnection.rs             30
+src\webui\mod.rs                       29754
+
+
+
+
+##### P19-FILE|C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\kline_poller.rs
+    1: //! ✅ Фаза 3г: свечи для futures через REST-поллинг.
+    2: //! fstream отдаёт только bookTicker (доказано пробником), REST fapi работает полностью.
+    3: //! ✅ Фаза 6: интервал настраивается per-bot (kline_interval: "1m", "15m"...).
+    4: //! ✅ П3: первый успешный запрос — backfill (limit=250).
+    5: //! 🔧 АНТИ-БАН v2: интервал 10с, бэкофф 10→60с, бан-пауза 120с,
+    6: //! телеметрия возраста REST-тишины.
+    7: //! 🛡️ RESILIENT v3: 3 внутренние попытки с backoff 500мс+1с внутри
+    8: //! одной poll-итерации. Ловит транзиентные TCP-обрывы (os error 10054),
+    9: //! которые testnet Binance выдаёт каждые ~50с. Внешняя pause_secs не
+   10: //! тронута — она для IP-банов и затяжных падений.
+   11: //!
+   12: //! ─────────────────────────────────────────────────────────────────────
+   13: //! 🔧 FIX 23.10.2026 — BUG#1 (gold_dca candles=0 на протяжении 48ч):
+   14: //!   1. Bybit: close_time_ms больше НЕ хардкод «+1 час» — вычисляется
+   15: //!      из интервала (4h → +14_400_000). Раньше незакрытая 4h-свеча
+   16: //!      публиковалась через час как is_closed=true, а её реальное
+   17: //!      закрытие потом терялось (open_time <= last_open_time → skip).
+   18: //!   2. Bybit: resp.text() + детект HTML ДО парсинга JSON. Геоблок-страница
+   19: //!      раньше падала в "error decoding response body" без диагностики —
+   20: //!      поллер молотил впустую и ни разу не публиковал свечу.
+   21: //!   3. Binance-ветка НЕ тронута (работает стабильно).
+   22: //! ─────────────────────────────────────────────────────────────────────
+   23: use crate::websocket::{KlineMessage, WebSocketHub, WebSocketMessage};
+   24: use std::sync::Arc;
+   25: use std::time::Duration;
+   26: 
+   27: /// 🛡️ RESILIENT: сколько попыток внутри одной poll-итерации.
+   28: const INNER_ATTEMPTS: u32 = 3;
+   29: /// 🛡️ RESILIENT: паузы между внутренними попытками (мс).
+   30: const INNER_BACKOFF_MS: &[u64] = &[500, 1000];
+   31: 
+   32: /// 🔧 FIX: пауза при детектированном геоблоке (HTML вместо JSON).
+   33: /// Ретраить бессмысленно — HTML не «пожелтеет» в JSON, пауза длинная.
+   34: const GEOBLOCK_PAUSE_SECS: u64 = 120;
+   35: 
+   36: pub fn spawn(
+   37:     children: &mut tokio::task::JoinSet<()>,
+   38:     hub: Arc<WebSocketHub>,
+   39:     rest_base: String,
+   40:     symbol: String,
+   41:     interval: String,
+   42: ) {
+   43:     children.spawn(async move {
+   44:         let client = reqwest::Client::builder()
+   45:             .timeout(Duration::from_secs(10))
+   46:             .build()
+   47:             .unwrap_or_default();
+   48:         let base = rest_base.trim_end_matches('/').to_string();
+   49:         let mut last_open_time: i64 = 0;
+   50:         let mut backfilled = false; // ✅ П3: до первого успешного ответа — широкий запрос
+   51:         let mut poll = tokio::time::interval(Duration::from_secs(10));
+   52:         poll.tick().await; // первый тик мгновенный — пропускаем
+   53: 
+   54:         // 🔧 АНТИ-БАН v2: динамическая пауза
+   55:         let mut pause_secs: u64 = 0;
+   56:         let mut consec_fails: u64 = 0;
+   57:         // 🔧 ТЕЛЕМЕТРИЯ: момент последнего успешного REST (0 = ещё не было)
+   58:         let mut last_ok_ms: i64 = 0;
+   59: 
+   60:         loop {
+   61:             poll.tick().await;
+   62: 
+   63:             // 🔧 АНТИ-БАН: пауза после бана/серии фейлов
+   64:             if pause_secs > 0 {
+   65:                 tokio::time::sleep(Duration::from_secs(pause_secs)).await;
+   66:             }
+   67: 
+   68:             // ✅ B2: поллер — non-critical: при перегрузке пропускаем тик
+   69:             if crate::utils::rate_limiter::LIMITER.acquire(false).await
+   70:                 == crate::utils::rate_limiter::Acquire::Throttle
+   71:             {
+   72:                 continue;
+   73:             }
+   74: 
+   75:             let limit = if backfilled { 2 } else { 250 };
+   76:             let url = format!(
+   77:                 "{}/fapi/v1/klines?symbol={}&interval={}&limit={}",
+   78:                 base,
+   79:                 symbol.to_uppercase(),
+   80:                 interval,
+   81:                 limit
+   82:             );
+   83: 
+   84:             // 🛡️ RESILIENT: 3 попытки с backoff 500мс+1с внутри одной
+   85:             // poll-итерации. Ловит транзиентные TCP-обрывы, которые testnet
+   86:             // выдаёт каждые ~50с (os error 10054). После 3 провалов —
+   87:             // делегируем во внешнюю pause_secs логику (IP-бан / затяжной сбой).
+   88:             let v_opt: Option<serde_json::Value> = {
+   89:                 let mut attempts: u32 = 0;
+   90:                 loop {
+   91:                     attempts += 1;
+   92:                     let resp_result = client.get(&url).send().await;
+   93:                     match resp_result {
+   94:                         Ok(r) => match read_body_json(r).await {
+   95:                             Ok(v) => break Some(v),
+   96:                             Err(e) if attempts < INNER_ATTEMPTS => {
+   97:                                 tracing::warn!(
+   98:                                     "📈 [{}] kline-поллер: JSON не разобран, попытка {}/{}: {}",
+   99:                                     symbol, attempts, INNER_ATTEMPTS, e
+  100:                                 );
+  101:                                 let backoff = INNER_BACKOFF_MS
+  102:                                     [(attempts - 1) as usize % INNER_BACKOFF_MS.len()];
+  103:                                 tokio::time::sleep(Duration::from_millis(backoff)).await;
+  104:                                 continue;
+  105:                             }
+  106:                             Err(e) => {
+  107:                                 consec_fails += 1;
+  108:                                 pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  109:                                 tracing::warn!(
+  110:                                     "📈 [{}] kline-поллер: ответ не разобран \
+  111:                                      (фейл {}, пауза {}с, REST-тишина {}с): {}",
+  112:                                     symbol, consec_fails, pause_secs,
+  113:                                     rest_silence(last_ok_ms), e
+  114:                                 );
+  115:                                 break None;
+  116:                             }
+  117:                         },
+  118:                         Err(e) if attempts < INNER_ATTEMPTS => {
+  119:                             tracing::warn!(
+  120:                                 "📈 [{}] kline-поллер: запрос не прошёл, попытка {}/{}: {}",
+  121:                                 symbol, attempts, INNER_ATTEMPTS, e
+  122:                             );
+  123:                             let backoff = INNER_BACKOFF_MS
+  124:                                 [(attempts - 1) as usize % INNER_BACKOFF_MS.len()];
+  125:                             tokio::time::sleep(Duration::from_millis(backoff)).await;
+  126:                             continue;
+  127:                         }
+  128:                         Err(e) => {
+  129:                             consec_fails += 1;
+  130:                             pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  131:                             tracing::warn!(
+  132:                                 "📈 [{}] kline-поллер: запрос не прошёл \
+  133:                                  (фейл {}, пауза {}с, REST-тишина {}с): {}",
+  134:                                 symbol, consec_fails, pause_secs,
+  135:                                 rest_silence(last_ok_ms), e
+  136:                             );
+  137:                             break None;
+  138:                         }
+  139:                     }
+  140:                 }
+  141:             };
+  142: 
+  143:             // 🛡️ Все 3 внутренние попытки провалились — пропускаем обработку,
+  144:             // внешняя pause_secs сработает на следующем тике.
+  145:             let Some(v) = v_opt else { continue };
+  146: 
+  147:             // 🔧 АНТИ-БАН: -1003 = IP ban — пауза 120с, бан не продлеваем
+  148:             if v["code"].as_i64() == Some(-1003) {
+  149:                 pause_secs = 120;
+  150:                 consec_fails += 1;
+  151:                 tracing::error!(
+  152:                     "📈 [{}] kline-поллер: 🚨 IP BANNED (-1003): {} — пауза 120с",
+  153:                     symbol,
+  154:                     v["msg"].as_str().unwrap_or("?")
+  155:                 );
+  156:                 continue;
+  157:             }
+  158:             // Прочие ошибки API (не массив)
+  159:             if v.as_array().is_none() {
+  160:                 consec_fails += 1;
+  161:                 pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  162:                 tracing::warn!(
+  163:                     "📈 [{}] kline-поллер: ответ не массив \
+  164:                      (фейл {}, пауза {}с, REST-тишина {}с): {}",
+  165:                     symbol, consec_fails, pause_secs,
+  166:                     rest_silence(last_ok_ms), v
+  167:                 );
+  168:                 continue;
+  169:             }
+  170: 
+  171:             // Успех: сброс счётчиков
+  172:             consec_fails = 0;
+  173:             pause_secs = 0;
+  174:             last_ok_ms = chrono::Utc::now().timestamp_millis();
+  175: 
+  176:             let rows = v.as_array().unwrap();
+  177: 
+  178:             for row in rows {
+  179:                 let Some(open_time) = row[0].as_i64() else { continue };
+  180:                 let Some(close_time) = row[6].as_i64() else { continue };
+  181:                 if close_time >= chrono::Utc::now().timestamp_millis() {
+  182:                     continue; // ещё формируется
+  183:                 }
+  184:                 if open_time <= last_open_time {
+  185:                     continue; // уже публиковали
+  186:                 }
+  187:                 let p = |i: usize| row[i].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+  188:                 last_open_time = open_time;
+  189: 
+  190:                 let close = p(4);
+  191:                 hub.publish(WebSocketMessage::Kline(KlineMessage {
+  192:                     symbol: symbol.to_uppercase(),
+  193:                     open: p(1),
+  194:                     high: p(2),
+  195:                     low: p(3),
+  196:                     close,
+  197:                     volume: p(5),
+  198:                     taker_buy_volume: p(9),
+  199:                     timestamp: close_time,
+  200:                     is_closed: true,
+  201:                     is_backfill: !backfilled,
+  202:                 }));
+  203:                 if backfilled {
+  204:                     tracing::info!(
+  205:                         "📈 [{}] kline-поллер: свеча опубликована (open_time={}, close={})",
+  206:                         symbol, open_time, close
+  207:                     );
+  208:                 }
+  209:             }
+  210: 
+  211:             if !rows.is_empty() {
+  212:                 if !backfilled {
+  213:                     tracing::info!(
+  214:                         "📈 [{}] kline-поллер: backfill завершён ({} свечей истории)",
+  215:                         symbol, rows.len()
+  216:                     );
+  217:                 }
+  218:                 backfilled = true;
+  219:             }
+  220:         }
+  221:     });
+  222: }
+  223: 
+  224: /// 🔍 V3.2: тело ответа как текст + ручной парсинг. При ошибке в сообщение
+  225: /// попадает HTTP-статус и первые 160 символов тела — сразу видно, ЧТО
+  226: /// вернул тестнет (HTML-страница, JSON-ошибка, пустота) вместо голого
+  227: /// "error decoding response body".
+  228: async fn read_body_json(r: reqwest::Response) -> Result<serde_json::Value, String> {
+  229:     let status = r.status();
+  230:     let body = match r.text().await {
+  231:         Ok(b) => b,
+  232:         Err(e) => return Err(format!("HTTP {} | тело не прочитано: {}", status, e)),
+  233:     };
+  234:     match serde_json::from_str::<serde_json::Value>(&body) {
+  235:         Ok(v) => Ok(v),
+  236:         Err(e) => Err(format!(
+  237:             "HTTP {} | тело[:160]: {:?} | serde: {}",
+  238:             status,
+  239:             body.chars().take(160).collect::<String>(),
+  240:             e
+  241:         )),
+  242:     }
+  243: }
+  244: 
+  245: /// 🆕 Phase B: Bybit V5 kline poller.
+  246: ///
+  247: /// Отличия от Binance:
+  248: ///   1. URL: /v5/market/kline?category=linear&symbol=XAUUSDT&interval=60&limit=2
+  249: ///   2. interval = "60" (число минут), не "1h" как у Binance
+  250: ///   3. Response: result.list — array of arrays, НО РЕВЕРСНУТЫЙ (новейшие первыми!)
+  251: ///      Format: [start, open, high, low, close, volume, turnover, ...]
+  252: ///      Время — в СЕКУНДАХ (не миллисекундах как у Binance!)
+  253: ///   4. confirm=true — свеча закрыта
+  254: pub fn spawn_bybit(
+  255:     children: &mut tokio::task::JoinSet<()>,
+  256:     hub: Arc<WebSocketHub>,
+  257:     rest_base: String,
+  258:     symbol: String,
+  259:     interval: String,
+  260: ) {
+  261:     children.spawn(async move {
+  262:         let client = reqwest::Client::builder()
+  263:             .timeout(Duration::from_secs(10))
+  264:             .build()
+  265:             .unwrap_or_default();
+  266:         let base = rest_base.trim_end_matches('/').to_string();
+  267: 
+  268:         // Конвертация interval строки в Bybit-формат:
+  269:         //   "1h" → "60", "4h" → "240", "15m" → "15", "1d" → "D", "1w" → "W"
+  270:         let bybit_interval = match interval.as_str() {
+  271:             "1m" => "1".to_string(),
+  272:             "5m" => "5".to_string(),
+  273:             "15m" => "15".to_string(),
+  274:             "30m" => "30".to_string(),
+  275:             "1h" => "60".to_string(),
+  276:             "4h" => "240".to_string(),
+  277:             "1d" => "D".to_string(),
+  278:             "1w" => "W".to_string(),
+  279:             "1M" => "M".to_string(),
+  280:             other => other.to_string(),
+  281:         };
+  282: 
+  283:         // 🔧 FIX BUG#1: длительность интервала в мс — для честного close_time.
+  284:         // Раньше: close_time_ms = open_time_ms + 3600_000 (хардкод 1h!),
+  285:         // а gold_dca работает на 4h → незакрытые 4h-свечи публиковались
+  286:         // через час как is_closed=true, реальное закрытие терялось.
+  287:         let bybit_interval_ms: i64 = match bybit_interval.as_str() {
+  288:             "1" => 60_000,
+  289:             "5" => 300_000,
+  290:             "15" => 900_000,
+  291:             "30" => 1_800_000,
+  292:             "60" => 3_600_000,
+  293:             "120" => 7_200_000,
+  294:             "240" => 14_400_000,
+  295:             "360" => 21_600_000,
+  296:             "480" => 28_800_000,
+  297:             "720" => 43_200_000,
+  298:             "D" => 86_400_000,
+  299:             "W" => 604_800_000,
+  300:             // Оценка 31 день: если чуть недозакрыта — опубликуется на
+  301:             // следующем цикле (10с), безопасно в обе стороны.
+  302:             "M" => 2_678_400_000,
+  303:             _ => 3_600_000,
+  304:         };
+  305: 
+  306:         let mut last_open_time: i64 = 0;
+  307:         let mut backfilled = false;
+  308:         let mut poll = tokio::time::interval(Duration::from_secs(10));
+  309:         poll.tick().await;
+  310: 
+  311:         let mut pause_secs: u64 = 0;
+  312:         let mut consec_fails: u64 = 0;
+  313: 
+  314:         loop {
+  315:             poll.tick().await;
+  316: 
+  317:             if pause_secs > 0 {
+  318:                 tokio::time::sleep(Duration::from_secs(pause_secs)).await;
+  319:             }
+  320: 
+  321:             if crate::utils::rate_limiter::LIMITER.acquire(false).await
+  322:                 == crate::utils::rate_limiter::Acquire::Throttle
+  323:             {
+  324:                 continue;
+  325:             }
+  326: 
+  327:             let limit = if backfilled { 2 } else { 250 };
+  328:             let url = format!(
+  329:                 "{}/v5/market/kline?category=linear&symbol={}&interval={}&limit={}",
+  330:                 base,
+  331:                 symbol.to_uppercase(),
+  332:                 bybit_interval,
+  333:                 limit
+  334:             );
+  335: 
+  336:             let resp = match client.get(&url).send().await {
+  337:                 Ok(r) => r,
+  338:                 Err(e) => {
+  339:                     consec_fails += 1;
+  340:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  341:                     tracing::warn!(
+  342:                         "📈 [{}] kline-поллер (Bybit): запрос не прошёл (фейл {}, пауза {}с): {}",
+  343:                         symbol, consec_fails, pause_secs, e
+  344:                     );
+  345:                     continue;
+  346:                 }
+  347:             };
+  348: 
+  349:             // 🔧 FIX BUG#1: сначала ТЕКСТ и детект HTML — геоблок Bybit с RU-IP
+  350:             // отдаёт страницу вместо JSON. Раньше resp.json() падал с
+  351:             // "error decoding response body" без диагностики, поллер крутился
+  352:             // 48ч впустую и ни разу не публиковал свечу (= candles=0).
+  353:             let body = match resp.text().await {
+  354:                 Ok(b) => b,
+  355:                 Err(e) => {
+  356:                     consec_fails += 1;
+  357:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  358:                     tracing::warn!(
+  359:                         "📈 [{}] kline-поллер (Bybit): тело не прочитано \
+  360:                          (фейл {}, пауза {}с): {}",
+  361:                         symbol, consec_fails, pause_secs, e
+  362:                     );
+  363:                     continue;
+  364:                 }
+  365:             };
+  366:             if looks_like_html(None, &body) {
+  367:                 // HTML не станет JSON от ретраев — длинная пауза, внятный лог
+  368:                 consec_fails += 1;
+  369:                 pause_secs = GEOBLOCK_PAUSE_SECS;
+  370:                 tracing::error!(
+  371:                     "📈 [{}] kline-поллер (Bybit): 🚨 GEOBLOCK — HTML вместо JSON \
+  372:                      (фейл {}, пауза {}с): {}",
+  373:                     symbol, consec_fails, pause_secs, body_head(&body)
+  374:                 );
+  375:                 continue;
+  376:             }
+  377:             let v: serde_json::Value = match serde_json::from_str(&body) {
+  378:                 Ok(v) => v,
+  379:                 Err(e) => {
+  380:                     consec_fails += 1;
+  381:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  382:                     tracing::warn!(
+  383:                         "📈 [{}] kline-поллер (Bybit): ответ не разобран \
+  384:                          (фейл {}, пауза {}с): {} | тело: {}",
+  385:                         symbol, consec_fails, pause_secs, e, body_head(&body)
+  386:                     );
+  387:                     continue;
+  388:                 }
+  389:             };
+  390: 
+  391:             // Проверяем Bybit V5 retCode
+  392:             let ret_code = v["retCode"].as_i64().unwrap_or(-1);
+  393:             if ret_code != 0 {
+  394:                 consec_fails += 1;
+  395:                 pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  396:                 tracing::warn!(
+  397:                     "📈 [{}] kline-поллер (Bybit): retCode={} msg={}",
+  398:                     symbol, ret_code,
+  399:                     v["retMsg"].as_str().unwrap_or("?")
+  400:                 );
+  401:                 continue;
+  402:             }
+  403: 
+  404:             let rows = match v["result"]["list"].as_array() {
+  405:                 Some(a) => a,
+  406:                 None => {
+  407:                     consec_fails += 1;
+  408:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  409:                     tracing::warn!(
+  410:                         "📈 [{}] kline-поллер (Bybit): result.list не массив: {}",
+  411:                         symbol, v
+  412:                     );
+  413:                     continue;
+  414:                 }
+  415:             };
+  416: 
+  417:             // Успех
+  418:             consec_fails = 0;
+  419:             pause_secs = 0;
+  420: 
+  421:             // Bybit возвращает свечи В ОБРАТНОМ ПОРЯДКЕ (новейшие первыми).
+  422:             // Разворачиваем для последовательной обработки.
+  423:             let mut sorted_rows: Vec<&serde_json::Value> = rows.iter().collect();
+  424:             sorted_rows.reverse();
+  425: 
+  426:             for row in sorted_rows {
+  427:                 // Bybit kline row format:
+  428:                 // [start (sec), open, high, low, close, volume, turnover]
+  429:                 // 0     1     2     3    4      5       6
+  430:                 let Some(start_str) = row[0].as_str() else { continue };
+  431:                 let Ok(start_raw) = start_str.parse::<i64>() else { continue };
+  432:                 let open_time_ms = if start_raw > 100_000_000_000 { start_raw } else { start_raw * 1000 }; // v3.6 FIX: Bybit TESTNET gives ms (13 digits), MAINNET gives sec - autodetect // sec → ms
+  433:                 // 🔧 FIX BUG#1: было `+ 3600_000` (хардкод 1h — битые 4h-свечи!)
+  434:                 let close_time_ms = open_time_ms + bybit_interval_ms;
+  435: 
+  436:                 // Пропускаем незакрытые свечи
+  437:                 if close_time_ms >= chrono::Utc::now().timestamp_millis() {
+  438:                     continue;
+  439:                 }
+  440:                 if open_time_ms <= last_open_time {
+  441:                     continue;
+  442:                 }
+  443: 
+  444:                 let p = |i: usize| row[i].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+  445:                 last_open_time = open_time_ms;
+  446: 
+  447:                 let close = p(4);
+  448:                 hub.publish(WebSocketMessage::Kline(KlineMessage {
+  449:                     symbol: symbol.to_uppercase(),
+  450:                     open: p(1),
+  451:                     high: p(2),
+  452:                     low: p(3),
+  453:                     close,
+  454:                     volume: p(5),
+  455:                     taker_buy_volume: 0.0, // Bybit не отдаёт taker_buy в этом endpoint
+  456:                     timestamp: close_time_ms,
+  457:                     is_closed: true,
+  458:                     is_backfill: !backfilled,
+  459:                 }));
+  460:                 if backfilled {
+  461:                     tracing::info!(
+  462:                         "📈 [{}] kline-поллер (Bybit): свеча опубликована (open_time={}, close={})",
+  463:                         symbol, open_time_ms, close
+  464:                     );
+  465:                 }
+  466:             }
+  467: 
+  468:             if !rows.is_empty() {
+  469:                 if !backfilled {
+  470:                     tracing::info!(
+  471:                         "📈 [{}] kline-поллер (Bybit): backfill завершён ({} свечей истории)",
+  472:                         symbol, rows.len()
+  473:                     );
+  474:                 }
+  475:                 backfilled = true;
+  476:             }
+  477:         }
+  478:     });
+  479: }
+  480: 
+  481: /// 🔧 FIX: детект HTML-ответа (геоблок-страница Bybit) ДО попытки JSON-парсинга
+  482: fn looks_like_html(content_type: Option<&str>, body: &str) -> bool {
+  483:     if let Some(ct) = content_type {
+  484:         if ct.to_ascii_lowercase().contains("text/html") {
+  485:             return true;
+  486:         }
+  487:     }
+  488:     let head = body.trim_start().to_ascii_lowercase();
+  489:     head.starts_with("<!doctype html") || head.starts_with("<html")
+  490: }
+  491: 
+  492: /// 🔧 FIX: голова тела для диагностики (первые 160 символов, без переносов)
+  493: fn body_head(body: &str) -> String {
+  494:     body.chars()
+  495:         .take(160)
+  496:         .map(|c| if c.is_control() { ' ' } else { c })
+  497:         .collect()
+  498: }
+  499: 
+  500: /// Секунды с последнего успешного REST (для строк диагностики)
+  501: fn rest_silence(last_ok_ms: i64) -> i64 {
+  502:     if last_ok_ms == 0 {
+  503:         return -1; // ещё ни одного успеха
+  504:     }
+  505:     chrono::Utc::now().timestamp_millis() / 1000 - last_ok_ms / 1000
+  506: }
+  507: 
+  508: /// v4.0: OKX V5 kline poller (public /api/v5/market/candles).
+  509: /// bar: 1m/3m/5m/15m/30m/1H/2H/4H/6H/12H. Rows NEWEST-first:
+  510: /// [ts, o, h, l, c, vol_contracts, vol_base, vol_quote, confirm]
+  511: pub fn spawn_okx(
+  512:     children: &mut tokio::task::JoinSet<()>,
+  513:     hub: Arc<WebSocketHub>,
+  514:     rest_base: String,
+  515:     symbol: String,
+  516:     interval: String,
+  517: ) {
+  518:     children.spawn(async move {
+  519:         let client = reqwest::Client::builder()
+  520:             .timeout(Duration::from_secs(10))
+  521:             .build()
+  522:             .unwrap_or_default();
+  523:         let base = rest_base.trim_end_matches('/').to_string();
+  524: 
+  525:         let bar = match interval.as_str() {
+  526:             "1h" => "1H".to_string(),
+  527:             "2h" => "2H".to_string(),
+  528:             "4h" => "4H".to_string(),
+  529:             "6h" => "6H".to_string(),
+  530:             "12h" => "12H".to_string(),
+  531:             other => other.to_string(),
+  532:         };
+  533:         let interval_ms: i64 = match bar.as_str() {
+  534:             "1m" => 60_000,
+  535:             "3m" => 180_000,
+  536:             "5m" => 300_000,
+  537:             "15m" => 900_000,
+  538:             "30m" => 1_800_000,
+  539:             "1H" => 3_600_000,
+  540:             "2H" => 7_200_000,
+  541:             "4H" => 14_400_000,
+  542:             "6H" => 21_600_000,
+  543:             "12H" => 43_200_000,
+  544:             _ => 3_600_000,
+  545:         };
+  546: 
+  547:         let inst_id = okx_inst_id_from_symbol(&symbol);
+  548: 
+  549:         let mut last_open_time: i64 = 0;
+  550:         let mut backfilled = false;
+  551:         let mut consec_fails: u64 = 0;
+  552:         let mut poll = tokio::time::interval(Duration::from_secs(10));
+  553:         poll.tick().await;
+  554: 
+  555:         loop {
+  556:             poll.tick().await;
+  557: 
+  558:             let limit = if backfilled { 3 } else { 250 };
+  559:             let url = format!(
+  560:                 "{}/api/v5/market/candles?instId={}&bar={}&limit={}",
+  561:                 base, inst_id, bar, limit
+  562:             );
+  563: 
+  564:             let body = match client.get(&url).send().await {
+  565:                 Ok(r) => match r.text().await {
+  566:                     Ok(b) => b,
+  567:                     Err(e) => {
+  568:                         consec_fails += 1;
+  569:                         let pause = (10u64 * consec_fails.min(6)).min(60);
+  570:                         tracing::warn!(
+  571:                             "[{}] kline-poller (OKX): body read failed (fail {}, pause {}s): {}",
+  572:                             symbol, consec_fails, pause, e
+  573:                         );
+  574:                         tokio::time::sleep(Duration::from_secs(pause)).await;
+  575:                         continue;
+  576:                     }
+  577:                 },
+  578:                 Err(e) => {
+  579:                     consec_fails += 1;
+  580:                     let pause = (10u64 * consec_fails.min(6)).min(60);
+  581:                     tracing::warn!(
+  582:                         "[{}] kline-poller (OKX): request failed (fail {}, pause {}s): {}",
+  583:                         symbol, consec_fails, pause, e
+  584:                     );
+  585:                     tokio::time::sleep(Duration::from_secs(pause)).await;
+  586:                     continue;
+  587:                 }
+  588:             };
+  589: 
+  590:             if body.trim_start().starts_with('<') {
+  591:                 tracing::error!(
+  592:                     "[{}] kline-poller (OKX): GEOBLOCK/HTML instead of JSON: {}",
+  593:                     symbol,
+  594:                     body.chars().take(120).collect::<String>()
+  595:                 );
+  596:                 tokio::time::sleep(Duration::from_secs(300)).await;
+  597:                 continue;
+  598:             }
+  599: 
+  600:             let v: serde_json::Value = match serde_json::from_str(&body) {
+  601:                 Ok(v) => v,
+  602:                 Err(e) => {
+  603:                     consec_fails += 1;
+  604:                     let pause = (10u64 * consec_fails.min(6)).min(60);
+  605:                     tracing::warn!(
+  606:                         "[{}] kline-poller (OKX): parse failed (fail {}, pause {}s): {} | body: {}",
+  607:                         symbol,
+  608:                         consec_fails,
+  609:                         pause,
+  610:                         e,
+  611:                         body.chars().take(120).collect::<String>()
+  612:                     );
+  613:                     tokio::time::sleep(Duration::from_secs(pause)).await;
+  614:                     continue;
+  615:                 }
+  616:             };
+  617: 
+  618:             if v["code"].as_str().unwrap_or("-1") != "0" {
+  619:                 consec_fails += 1;
+  620:                 tracing::warn!(
+  621:                     "[{}] kline-poller (OKX): code={} msg={}",
+  622:                     symbol,
+  623:                     v["code"].as_str().unwrap_or("?"),
+  624:                     v["msg"].as_str().unwrap_or("?")
+  625:                 );
+  626:                 tokio::time::sleep(Duration::from_secs(10)).await;
+  627:                 continue;
+  628:             }
+  629: 
+  630:             let rows = match v["data"].as_array() {
+  631:                 Some(a) => a,
+  632:                 None => {
+  633:                     consec_fails += 1;
+  634:                     tracing::warn!("[{}] kline-poller (OKX): data is not an array", symbol);
+  635:                     tokio::time::sleep(Duration::from_secs(10)).await;
+  636:                     continue;
+  637:                 }
+  638:             };
+  639: 
+  640:             consec_fails = 0;
+  641: 
+  642:             let mut sorted_rows: Vec<&serde_json::Value> = rows.iter().collect();
+  643:             sorted_rows.reverse(); // oldest first
+  644: 
+  645:             for row in sorted_rows {
+  646:                 let Some(open_ms) = row[0].as_str().and_then(|s| s.parse::<i64>().ok()) else {
+  647:                     continue;
+  648:                 };
+  649:                 let close_ms = open_ms + interval_ms;
+  650:                 if close_ms >= chrono::Utc::now().timestamp_millis() {
+  651:                     continue; // candle still forming
+  652:                 }
+  653:                 if open_ms <= last_open_time {
+  654:                     continue; // already published
+  655:                 }
+  656:                 let p = |i: usize| row[i].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+  657:                 last_open_time = open_ms;
+  658: 
+  659:                 hub.publish(WebSocketMessage::Kline(KlineMessage {
+  660:                     symbol: symbol.to_uppercase(),
+  661:                     open: p(1),
+  662:                     high: p(2),
+  663:                     low: p(3),
+  664:                     close: p(4),
+  665:                     volume: p(6), // volCcy = base-asset volume (Binance-like)
+  666:                     taker_buy_volume: 0.0,
+  667:                     timestamp: close_ms,
+  668:                     is_closed: true,
+  669:                     is_backfill: !backfilled,
+  670:                 }));
+  671:             }
+  672: 
+  673:             if !rows.is_empty() {
+  674:                 if !backfilled {
+  675:                     tracing::info!(
+  676:                         "[{}] kline-poller (OKX): backfill done ({} candles)",
+  677:                         symbol,
+  678:                         rows.len()
+  679:                     );
+  680:                 }
+  681:                 backfilled = true;
+  682:             }
+  683:         }
+  684:     });
+  685: }
+  686: 
+  687: /// v4.0: "XAUUSDT" -> "XAU-USDT-SWAP"
+  688: fn okx_inst_id_from_symbol(symbol: &str) -> String {
+  689:     let s = symbol.trim().to_uppercase();
+  690:     if s.contains('-') {
+  691:         if s.ends_with("-SWAP") { s } else { format!("{}-SWAP", s) }
+  692:     } else if let Some(base) = s.strip_suffix("USDT") {
+  693:         format!("{}-USDT-SWAP", base)
+  694:     } else {
+  695:         s
+  696:     }
+  697: }
+
+##### P19-ENDFILE|C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\kline_poller.rs|lines=697
+
+##### P19-FILE|C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\resilient_client.rs
+    1: //! Resilient decorator поверх `ExchangeClient` — неблокирующий reconcile.
+    2: //!
+    3: //! ## Проблема
+    4: //! Тестнет Binance `/fapi/v2/positionRisk` нестабилен — на начале часа
+    5: //! отдаёт `error decoding response body` (HTML вместо JSON) или таймаутит.
+    6: //! Движок вызывает `get_positions()` ПЕРЕД входом в сделку → на любой
+    7: //! сбой API сделка пропускается → бот не входит в сигналы.
+    8: //!
+    9: //! ## Решение (Decorator, БЕЗ правок core-файлов)
+   10: //! 1. Оборачиваем реальный `BinanceFuturesClient` в `ResilientClient`.
+   11: //! 2. Все "торговые" методы (place_market_order, cancel_order, ...) —
+   12: //!    **напрямую** во внутренний клиент, БЕЗ retry (риск двойной
+   13: //!    отправки ордера).
+   14: //! 3. ТОЛЬКО `get_positions()` — retry с экспоненциальным backoff +
+   15: //!    жёсткий per-attempt таймаут + circuit breaker + fallback на
+   16: //!    локальный стейт (StateManager, который и есть источник правды
+   17: //!    для собственных позиций бота).
+   18: //! 4. Когда все retry упали — возвращаем локальные позиции из БД.
+   19: //!    Периодический reconciliation (5 мин в main.rs) ловит дрейф между
+   20: //!    локальным стейтом и биржей в фоне.
+   21: //!
+   22: //! ## Безопасность
+   23: //! - Env `RECONCILE_STRICT=1` → fallback возвращает `Err` (исходное
+   24: //!   поведение "пропустить сделку"). На mainnet лучше ставить STRICT=1.
+   25: //! - Circuit breaker: 3 провала подряд → 60с без запросов к бирже,
+   26: //!   сразу fallback (защита от rate-limit бана testnet).
+   27: //! - Per-attempt timeout 3с — внешний `tokio::time::timeout` гарантированно
+   28: //!   отменяет даже зависший `reqwest` (внутренний 10с таймаут клиента
+   29: //!   не успеет сработать).
+   30: //!
+   31: //! ## Архитектура
+   32: //! Decorator → `inner: Arc<dyn ExchangeClient>` (реальный клиент)
+   33: //!          → `fallback: Arc<dyn ReconcileFallback>` (локальная БД)
+   34: //!
+   35: //! Pattern: «Decorator + Circuit Breaker + Local Fallback» —
+   36: //! не требует правок traits.rs / binance_futures.rs / execution_engine.rs,
+   37: //! обновление core-крейта ничего не сломает.
+   38: 
+   39: use std::sync::Arc;
+   40: use std::time::Duration;
+   41: 
+   42: use anyhow::Result;
+   43: use async_trait::async_trait;
+   44: use std::sync::Mutex; // ✅ FIX: parking_lot может отсутствовать в Cargo.toml — std-аналог
+   45: 
+   46: use super::traits::{ExchangeClient, ExchangePosition, OrderResult};
+   47: use crate::state::StateManager;
+   48: 
+   49: // =====================================================================
+   50: // Трейт fallback-провайдера — реализуется на чём угодно, что знает
+   51: // локальное состояние позиций бота.
+   52: // =====================================================================
+   53: pub trait ReconcileFallback: Send + Sync {
+   54:     /// Возвращает локальные (БД) позиции бота в виде биржевых.
+   55:     /// `qty` > 0 = LONG, < 0 = SHORT (как в `ExchangePosition`).
+   56:     fn local_positions(&self) -> Vec<ExchangePosition>;
+   57: }
+   58: 
+   59: /// `StateManager` — авторитетная локальная книга открытых позиций
+   60: /// (in-memory DashMap + SQLite). Это естественный fallback, когда биржа
+   61: /// недоступна: бот знает свои позиции лучше, чем тестнет в момент сбоя.
+   62: impl ReconcileFallback for StateManager {
+   63:     fn local_positions(&self) -> Vec<ExchangePosition> {
+   64:         self.get_positions()
+   65:             .iter()
+   66:             .map(|p| ExchangePosition {
+   67:                 symbol: p.symbol.clone(),
+   68:                 qty: match p.side {
+   69:                     crate::state::state_manager::PositionSide::Long => p.quantity,
+   70:                     crate::state::state_manager::PositionSide::Short => -p.quantity,
+   71:                 },
+   72:                 entry_price: p.entry_price,
+   73:             })
+   74:             .collect()
+   75:     }
+   76: }
+   77: 
+   78: // =====================================================================
+   79: // Circuit breaker state
+   80: // =====================================================================
+   81: #[derive(Clone, Copy, Default)]
+   82: struct CircuitState {
+   83:     consecutive_failures: u32,
+   84:     opened_at_ms: i64,
+   85: }
+   86: 
+   87: // =====================================================================
+   88: // Конфиг retry — откалиброван под сигнальный цикл (1h candle).
+   89: // Сигнал в xx:00:04, reconcile стартует ~xx:00:14.
+   90: // 3 попытки × 3с timeout + 300мс + 800мс backoff = ≤10.1с
+   91: // → вход до xx:00:25, задолго до следующей свечи (xx:01:00).
+   92: // =====================================================================
+   93: const PER_ATTEMPT_TIMEOUT_SECS: u64 = 3;
+   94: const BACKOFF_MS: &[u64] = &[300, 800]; // между 1→2 и 2→3 попыткой
+   95: const CIRCUIT_THRESHOLD: u32 = 3;        // 3 провала подряд → открыть
+   96: const CIRCUIT_COOLDOWN_MS: i64 = 60_000; // 60с fallback-режим
+   97: 
+   98: pub struct ResilientClient {
+   99:     inner: Arc<dyn ExchangeClient>,
+  100:     fallback: Arc<dyn ReconcileFallback>,
+  101:     circuit: Mutex<CircuitState>,
+  102:     /// Strict = на fallback возвращать Err (для mainnet).
+  103:     strict: bool,
+  104: }
+  105: 
+  106: impl ResilientClient {
+  107:     pub fn new(
+  108:         inner: Arc<dyn ExchangeClient>,
+  109:         fallback: Arc<dyn ReconcileFallback>,
+  110:         _strict_default: bool, // PATCH P15: strict-by-URL hook; P11 already defaults strict (env override wins)
+  111:     ) -> Self {
+  112:         // [P11:strict] env override -> default STRICT (fail-safe for real money).
+  113:         // Reconciliation failure = no entries instead of blind local-state entries.
+  114:         // To loosen on testnet: RECONCILE_STRICT=0 in .env.
+  115:         let strict = Self::resolve_strict();
+  116:         tracing::info!("RECONCILE_STRICT = {}", strict);
+  117:         Self {
+  118:             inner,
+  119:             fallback,
+  120:             circuit: Mutex::new(CircuitState::default()),
+  121:             strict,
+  122:         }
+  123:     }
+  124: 
+  125:     // [P11:strict] explicit env override; default = strict (fail-safe)
+  126:     fn resolve_strict() -> bool {
+  127:         match std::env::var("RECONCILE_STRICT") {
+  128:             Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+  129:             Ok(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
+  130:             _ => true,
+  131:         }
+  132:     }
+  133: 
+  134:     // --- Circuit breaker helpers ------------------------------------
+  135: 
+  136:     fn circuit_open(&self) -> bool {
+  137:         let st = self.circuit.lock().unwrap_or_else(|e| e.into_inner());
+  138:         if st.consecutive_failures < CIRCUIT_THRESHOLD {
+  139:             return false;
+  140:         }
+  141:         let now = chrono::Utc::now().timestamp_millis();
+  142:         now - st.opened_at_ms < CIRCUIT_COOLDOWN_MS
+  143:     }
+  144: 
+  145:     fn record_success(&self) {
+  146:         let mut st = self.circuit.lock().unwrap_or_else(|e| e.into_inner());
+  147:         st.consecutive_failures = 0;
+  148:         st.opened_at_ms = 0;
+  149:     }
+  150: 
+  151:     fn record_failure(&self) {
+  152:         let mut st = self.circuit.lock().unwrap_or_else(|e| e.into_inner());
+  153:         st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+  154:         if st.consecutive_failures == CIRCUIT_THRESHOLD {
+  155:             st.opened_at_ms = chrono::Utc::now().timestamp_millis();
+  156:             tracing::warn!(
+  157:                 "🔄 reconcile circuit-breaker РАЗОМКНУТ: {} провала подряд → \
+  158:                  {}с fallback-режим (без запросов к бирже)",
+  159:                 CIRCUIT_THRESHOLD,
+  160:                 CIRCUIT_COOLDOWN_MS / 1000
+  161:             );
+  162:         }
+  163:     }
+  164: 
+  165:     // --- Fallback decision ------------------------------------------
+  166: 
+  167:     fn fallback_result(&self) -> Result<Vec<ExchangePosition>> {
+  168:         if self.strict {
+  169:             return Err(anyhow::anyhow!(
+  170:                 "reconcile недоступен (RECONCILE_STRICT=1) — вход пропущен по strict-режиму"
+  171:             ));
+  172:         }
+  173:         let local = self.fallback.local_positions();
+  174:         tracing::warn!(
+  175:             "🛟 reconcile fallback → взял {} локальных позиций из StateManager",
+  176:             local.len()
+  177:         );
+  178:         Ok(local)
+  179:     }
+  180: }
+  181: 
+  182: // =====================================================================
+  183: // Реализация ExchangeClient — Decorator.
+  184: // Все торговые методы делегируются как есть (БЕЗ retry!).
+  185: // Только get_positions получает устойчивую обвязку.
+  186: // =====================================================================
+  187: #[async_trait]
+  188: impl ExchangeClient for ResilientClient {
+  189:     async fn place_market_order(
+  190:         &self,
+  191:         symbol: &str,
+  192:         side: &str,
+  193:         quantity: f64,
+  194:         client_order_id: Option<String>,
+  195:     ) -> Result<OrderResult> {
+  196:         // ⚠️ НЕТ retry — повторная отправка = двойной ордер.
+  197:         self.inner
+  198:             .place_market_order(symbol, side, quantity, client_order_id)
+  199:             .await
+  200:     }
+  201: 
+  202:     async fn place_limit_order(
+  203:         &self,
+  204:         symbol: &str,
+  205:         side: &str,
+  206:         quantity: f64,
+  207:         price: f64,
+  208:         client_order_id: Option<String>,
+  209:     ) -> Result<OrderResult> {
+  210:         self.inner
+  211:             .place_limit_order(symbol, side, quantity, price, client_order_id)
+  212:             .await
+  213:     }
+  214: 
+  215:     async fn cancel_order(&self, symbol: &str, order_id: u64) -> Result<bool> {
+  216:         self.inner.cancel_order(symbol, order_id).await
+  217:     }
+  218: 
+  219:     async fn get_order_status(&self, symbol: &str, order_id: u64) -> Result<OrderResult> {
+  220:         self.inner.get_order_status(symbol, order_id).await
+  221:     }
+  222: 
+  223:     async fn get_balance(&self, asset: &str) -> Result<f64> {
+  224:         self.inner.get_balance(asset).await
+  225:     }
+  226: 
+  227:     async fn get_order_book(
+  228:         &self,
+  229:         symbol: &str,
+  230:         limit: usize,
+  231:     ) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>)> {
+  232:         self.inner.get_order_book(symbol, limit).await
+  233:     }
+  234: 
+  235:     async fn sync_time(&self) -> Result<()> {
+  236:         self.inner.sync_time().await
+  237:     }
+  238: 
+  239:     async fn get_order_commission(&self, symbol: &str, order_id: u64) -> Result<f64> {
+  240:         self.inner.get_order_commission(symbol, order_id).await
+  241:     }
+  242: 
+  243:     async fn place_protective_order(
+  244:         &self,
+  245:         symbol: &str,
+  246:         side: &str,
+  247:         stop: bool,
+  248:         trigger_price: f64,
+  249:         client_order_id: Option<String>,
+  250:     ) -> Result<OrderResult> {
+  251:         // ⚠️ НЕТ retry — повторная отправка = дубликат SL/TP ордера.
+  252:         self.inner
+  253:             .place_protective_order(symbol, side, stop, trigger_price, client_order_id)
+  254:             .await
+  255:     }
+  256: 
+  257:     async fn get_order_by_client_id(
+  258:         &self,
+  259:         symbol: &str,
+  260:         orig_client_order_id: &str,
+  261:     ) -> Result<OrderResult> {
+  262:         // Чтение по client_id — per-attempt таймаут, без retry.
+  263:         match tokio::time::timeout(
+  264:             Duration::from_secs(PER_ATTEMPT_TIMEOUT_SECS),
+  265:             self.inner.get_order_by_client_id(symbol, orig_client_order_id),
+  266:         )
+  267:         .await
+  268:         {
+  269:             Ok(inner) => inner,
+  270:             Err(_) => Err(anyhow::anyhow!(
+  271:                 "get_order_by_client_id таймаут {}с",
+  272:                 PER_ATTEMPT_TIMEOUT_SECS
+  273:             )),
+  274:         }
+  275:     }
+  276: 
+  277:     async fn get_open_orders(&self, symbol: &str) -> Result<Vec<OrderResult>> {
+  278:         // Список открытых ордеров по символу — per-attempt таймаут, без retry.
+  279:         match tokio::time::timeout(
+  280:             Duration::from_secs(PER_ATTEMPT_TIMEOUT_SECS),
+  281:             self.inner.get_open_orders(symbol),
+  282:         )
+  283:         .await
+  284:         {
+  285:             Ok(inner) => inner,
+  286:             Err(_) => Err(anyhow::anyhow!(
+  287:                 "get_open_orders таймаут {}с",
+  288:                 PER_ATTEMPT_TIMEOUT_SECS
+  289:             )),
+  290:         }
+  291:     }
+  292: 
+  293:     // ===============================================================
+  294:     // ✨ Единственный метод с устойчивой обвязкой
+  295:     // ===============================================================
+  296:     async fn get_positions(&self) -> Result<Vec<ExchangePosition>> {
+  297:         // 1) Circuit открыт → в обход retry сразу локальный fallback.
+  298:         if self.circuit_open() {
+  299:             tracing::debug!(
+  300:                 "reconcile: circuit открыт → сразу fallback (без запроса к бирже)"
+  301:             );
+  302:             return self.fallback_result();
+  303:         }
+  304: 
+  305:         let total_attempts = 1 + BACKOFF_MS.len(); // 3 попытки
+  306:         for attempt in 1..=total_attempts {
+  307:             // Жёсткий per-attempt таймаут — даже если reqwest внутри
+  308:             // завис на 10с, мы отменим future через PER_ATTEMPT_TIMEOUT_SECS.
+  309:             let fut = self.inner.get_positions();
+  310:             match tokio::time::timeout(
+  311:                 Duration::from_secs(PER_ATTEMPT_TIMEOUT_SECS),
+  312:                 fut,
+  313:             )
+  314:             .await
+  315:             {
+  316:                 Ok(Ok(v)) => {
+  317:                     self.record_success();
+  318:                     return Ok(v);
+  319:                 }
+  320:                 Ok(Err(e)) => {
+  321:                     // API ответило, но с ошибкой (HTML вместо JSON,
+  322:                     // 5xx, banned, etc.) — retry.
+  323:                     tracing::warn!(
+  324:                         "reconcile попытка {}/{}: API ошибка: {}",
+  325:                         attempt, total_attempts, e
+  326:                     );
+  327:                 }
+  328:                 Err(_) => {
+  329:                     // Сетевой таймаут — future отменена.
+  330:                     tracing::warn!(
+  331:                         "reconcile попытка {}/{}: таймаут {}с",
+  332:                         attempt, total_attempts, PER_ATTEMPT_TIMEOUT_SECS
+  333:                     );
+  334:                 }
+  335:             }
+  336:             if attempt < total_attempts {
+  337:                 let d = BACKOFF_MS[attempt - 1];
+  338:                 tokio::time::sleep(Duration::from_millis(d)).await;
+  339:             }
+  340:         }
+  341: 
+  342:         // 2) Все retry исчерпаны → фиксируем провал для circuit breaker
+  343:         //    и возвращаем локальный fallback.
+  344:         self.record_failure();
+  345:         tracing::warn!(
+  346:             "🛟 reconcile недоступен после {} попыток → fallback на StateManager{}",
+  347:             total_attempts,
+  348:             if self.strict { " (STRICT → реальная ошибка)" } else { "" }
+  349:         );
+  350:         self.fallback_result()
+  351:     }
+  352: }
+
+##### P19-ENDFILE|C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\resilient_client.rs|lines=352
+
+##### P19-FILE|C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs
+    1: #![allow(async_fn_in_trait)]
+    2: #![allow(dead_code)]
+    3: 
+    4: use anyhow::Result;
+    5: use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+    6: use std::collections::HashMap;
+    7: use std::sync::Arc;
+    8: use tracing_subscriber::{fmt, EnvFilter};
+    9: 
+   10: mod agents;
+   11: mod config;
+   12: mod exchange;
+   13: mod execution;
+   14: mod metrics;
+   15: mod risk;
+   16: mod state;
+   17: mod strategies;
+   18: mod utils;
+   19: mod webui;
+   20: mod websocket;
+   21: 
+   22: fn init_logger() -> Result<()> {
+   23:     use tracing_subscriber::prelude::*;
+   24: 
+   25:     let file_appender = tracing_appender::rolling::daily("logs", "bot.log");
+   26:     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+   27:     std::mem::forget(guard);
+   28: 
+   29:     let console_layer = fmt::layer()
+   30:         .with_target(true)
+   31:         .with_writer(std::io::stdout);
+   32: 
+   33:     let file_layer = fmt::layer()
+   34:         .with_target(true)
+   35:         .with_ansi(false)
+   36:         .with_writer(non_blocking);
+   37: 
+   38:     let filter = EnvFilter::try_from_default_env()
+   39:         .unwrap_or_else(|_| EnvFilter::new("info,scalping_agents=debug"));
+   40: 
+   41:     tracing_subscriber::registry()
+   42:         .with(filter)
+   43:         .with(console_layer)
+   44:         .with(file_layer)
+   45:         .init();
+   46: 
+   47:     Ok(())
+   48: }
+   49: 
+   50: /// ✅ Стартовая устойчивость: тестнет флаковый, а сеть после логона Windows
+   51: /// поднимается через десятки секунд — автозагрузка стартует бота раньше сети.
+   52: async fn load_filters_retrying(
+   53:     url: &str,
+   54:     is_futures: bool,
+   55:     symbols: &[String],
+   56:     max_attempts: u32,
+   57: ) -> Result<Arc<exchange::FilterRegistry>> {
+   58:     let mut last_err = None;
+   59:     for attempt in 1..=max_attempts {
+   60:         match exchange::FilterRegistry::load(url, is_futures, symbols).await {
+   61:             Ok(r) => return Ok(Arc::new(r)),
+   62:             Err(e) => {
+   63:                 tracing::warn!(
+   64:                     "📊 фильтры ({}): цикл {}/{} не удался: {}",
+   65:                     url, attempt, max_attempts, e
+   66:                 );
+   67:                 last_err = Some(e);
+   68:                 if attempt < max_attempts {
+   69:                     let pause = (attempt as u64).min(6) * 10; // 10,20,...,60 сек
+   70:                     tracing::warn!("📊 фильтры: повтор через {} с", pause);
+   71:                     tokio::time::sleep(std::time::Duration::from_secs(pause)).await;
+   72:                 }
+   73:             }
+   74:         }
+   75:     }
+   76:     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("фильтры не загружены")))
+   77: }
+   78: 
+   79: /// ✅ V3.3: UTF-8 в консоли Windows изнутри бота — костыли `chcp 65001`
+   80: /// и `[Console]::OutputEncoding` в PowerShell больше не нужны.
+   81: /// Кодовая страница — свойство самой КОНСОЛИ, её может менять любой
+   82: /// процесс этой консоли, включая наш.
+   83: #[cfg(windows)]
+   84: fn setup_windows_console() {
+   85:     use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+   86:     unsafe {
+   87:         SetConsoleOutputCP(65001); // вывод: эмодзи + кириллица без кракозябр
+   88:         SetConsoleCP(65001); // ввод (на случай интерактива)
+   89:     }
+   90: }
+   91: 
+   92: #[cfg(not(windows))]
+   93: fn setup_windows_console() {}
+   94: 
+   95: #[tokio::main]
+   96: async fn main() -> Result<()> {
+   97:     setup_windows_console();
+   98:     dotenvy::dotenv().ok();
+   99:     init_logger()?;
+  100: 
+  101:     // ✅ 4а (К-2): паника любого таска пишется в лог
+  102:     let default_panic_hook = std::panic::take_hook();
+  103:     std::panic::set_hook(Box::new(move |info| {
+  104:         tracing::error!("💥 PANIC: {}", info);
+  105:         default_panic_hook(info);
+  106:     }));
+  107: tracing::info!("🚀 AVRORA v0.3.0 | multi-agent");
+  108: 
+  109:     let config = config::AppConfig::load_from("config.toml")?;
+  110:     tracing::info!("✅ Конфигурация загружена | ботов: {}", config.bots.len());
+  111: 
+  112:     let global = config.global.clone();
+  113:     let global_symbol = global.symbol.clone();
+  114: 
+  115:     // ============================================================
+  116:     // HFT-канон: один TimeSync на процесс
+  117:     // ============================================================
+  118:     let time_sync = exchange::create_time_sync();
+  119: 
+  120:     // ✅ П1: ретрай первичного sync_time
+  121:     if let Some(first_bot) = config.bots.first() {
+  122:         if let Ok(probe) = exchange::create_client(&global, first_bot, time_sync.clone()) {
+  123:             let mut synced = false;
+  124:             for attempt in 1..=5u32 {
+  125:                 match probe.sync_time().await {
+  126:                     Ok(()) => { synced = true; break; }
+  127:                     Err(e) => {
+  128:                         tracing::warn!("⏰ sync_time попытка {}/5: {}", attempt, e);
+  129:                         tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+  130:                     }
+  131:                 }
+  132:             }
+  133:             if !synced {
+  134:                 tracing::error!("⏰ sync_time не удался — возможны отказы -1021. Продолжаю.");
+  135:             }
+  136:         }
+  137:     }
+  138: 
+  139:     // ============================================================
+  140:     // ✅ Фаза 2: единый источник фильтров символов (exchangeInfo)
+  141:     // ============================================================
+  142:     let mut spot_symbols: Vec<String> = Vec::new();
+  143:     let mut binance_fut_symbols: Vec<String> = Vec::new();
+  144:     let mut bybit_fut_symbols: Vec<String> = Vec::new();
+  145:     let mut okx_fut_symbols: Vec<String> = Vec::new();
+  146:     for bot in &config.bots {
+  147:         let sym = bot.symbol.clone().unwrap_or_else(|| global_symbol.clone());
+  148:         if bot.market_type != "futures" {
+  149:             if !spot_symbols.contains(&sym) { spot_symbols.push(sym); }
+  150:             continue;
+  151:         }
+  152:         let url = bot.rest_url_override.as_ref().unwrap_or(&global.rest_url);
+  153:         if url.contains("bybit") {
+  154:             if !bybit_fut_symbols.contains(&sym) { bybit_fut_symbols.push(sym); }
+  155:         } else if url.contains("okx") {
+  156:             if !okx_fut_symbols.contains(&sym) { okx_fut_symbols.push(sym); }
+  157:         } else {
+  158:             if !binance_fut_symbols.contains(&sym) { binance_fut_symbols.push(sym); }
+  159:         }
+  160:     }
+  161: 
+  162:     let spot_filters = if spot_symbols.is_empty() { None } else {
+  163:         Some(load_filters_retrying(&global.rest_url, false, &spot_symbols, 6).await?)
+  164:     };
+  165:     let binance_fut_filters = if binance_fut_symbols.is_empty() { None } else {
+  166:         Some(load_filters_retrying("https://fapi.binance.com", true, &binance_fut_symbols, 6).await?)
+  167:     };
+  168:     // v4.0: OKX instruments via public REST (same host for demo and prod)
+  169:     let okx_fut_filters = if okx_fut_symbols.is_empty() { None } else {
+  170:         let okx_rest = config.bots.iter()
+  171:             .find(|b| b.rest_url_override.as_ref().map(|u| u.contains("okx")).unwrap_or(false))
+  172:             .map(|b| b.rest_url_override.clone().unwrap_or_default())
+  173:             .unwrap_or_else(|| global.rest_url.clone());
+  174:         Some(Arc::new(exchange::FilterRegistry::load_okx(&okx_rest, &okx_fut_symbols).await?))
+  175:     };
+  176:     let bybit_fut_filters = if bybit_fut_symbols.is_empty() { None } else {
+  177:         Some(Arc::new(exchange::FilterRegistry::load_bybit("https://api.bybit.com", &bybit_fut_symbols).await?))
+  178:     };
+  179: 
+  180:     // ============================================================
+  181:     // WebSocket Hubs
+  182:     // ============================================================
+  183:     let mut hubs: HashMap<String, Arc<websocket::WebSocketHub>> = HashMap::new();
+  184: 
+  185:     // ✅ v3.5: COMMON-хаб создаём ТОЛЬКО если есть хотя бы один не-изолированный
+  186:     // бот. Раньше создавался всегда: при полностью изолированном портфеле это
+  187:     // лишнее WS-соединение (в логе 12:50 — двойной хаб для TAOUSDT).
+  188:     let has_common_bots = config.bots.iter().any(|b| !b.isolated);
+  189:     if has_common_bots {
+  190:         let spot_hub = websocket::WebSocketHub::new(&global.ws_url, &global_symbol).await?;
+  191:         tracing::info!("📡 [COMMON] WebSocket Hub для {} (spot) запущен", global_symbol);
+  192:         hubs.insert(format!("common:{}", global_symbol), spot_hub);
+  193:     } else {
+  194:         tracing::info!("📡 [COMMON] хаб не нужен — все боты изолированы (минус одно WS-соединение)");
+  195:     }
+  196: 
+  197:     for bot in &config.bots {
+  198:         if !bot.isolated {
+  199:             continue;
+  200:         }
+  201:         let sym = bot.symbol.as_ref().unwrap_or(&global_symbol).clone();
+  202:         let ws_url = bot.ws_url_override.as_ref().unwrap_or(&global.ws_url).clone();
+  203: 
+  204:         let key = format!("{}:{}", bot.name, sym);
+  205:         if hubs.contains_key(&key) {
+  206:             continue;
+  207:         }
+  208: 
+  209:         let hub = websocket::WebSocketHub::new(&ws_url, &sym).await?;
+  210:         // ✅ v3.5: честный ярлык рынка — testnet.binancefuture.com НЕ содержит
+  211:         // "fstream", из-за чего futures-хабы метились как "(spot)".
+  212:         let market_label = if ws_url.contains("fstream")
+  213:             || ws_url.contains("binancefuture")
+  214:             || ws_url.contains("bybit")
+  215:             || ws_url.contains("okx")
+  216:         {
+  217:             "futures"
+  218:         } else {
+  219:             "spot"
+  220:         };
+  221:         tracing::info!(
+  222:             "📡 [ISOLATED] WebSocket Hub для {} ({}) запущен",
+  223:             sym,
+  224:             market_label
+  225:         );
+  226:         hubs.insert(key, hub);
+  227:     }
+  228: 
+  229:     // Broadcast-канал для shutdown
+  230:     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(4);
+  231: 
+  232:     // ✅ WebUI: дашборд + API + Prometheus на одном порту
+  233:     // ✅ v4: + api_key/api_secret (для запроса баланса, файл webui/mod.rs)
+  234:     let webui_bots: Vec<webui::BotInfo> = config.bots.iter().map(|b| webui::BotInfo {
+  235:         name: b.name.clone(),
+  236:         symbol: b.symbol.clone().unwrap_or_else(|| global_symbol.clone()),
+  237:         strategy: b.strategy.name.clone(),
+  238:         market: b.market_type.clone(),
+  239:         simulate: b.simulate,
+  240:         interval: b.kline_interval.clone(),
+  241:         db_path: b.db_path_override.clone().unwrap_or_else(|| global.db_path.clone()),
+  242:         rest_url: b.rest_url_override.clone().unwrap_or_else(|| global.rest_url.clone()),
+  243:         api_key: b.api_key.clone(),
+  244:         api_secret: b.api_secret.clone(),
+  245:     }).collect();
+  246:     let metrics_handle = webui::spawn(webui_bots, global.db_path.clone());
+  247:     // [P11:tg] Telegram alerts poller (journal CLOSEs + suspensions; env-gated)
+  248:     {
+  249:         let poller_bots: Vec<(String, String)> = config
+  250:             .bots
+  251:             .iter()
+  252:             .map(|b| {
+  253:                 (
+  254:                     b.name.clone(),
+  255:                     b.db_path_override
+  256:                         .clone()
+  257:                         .unwrap_or_else(|| global.db_path.clone()),
+  258:                 )
+  259:             })
+  260:             .collect();
+  261:         crate::utils::telegram::spawn_poller(poller_bots, global.db_path.clone());
+  262:     }
+  263:     tracing::info!("📊 Дашборд: http://localhost:9090");
+  264: 
+  265:     // ✅ 4б (К-1): ОДИН риск-менеджер на весь процесс
+  266:     // ✅ B2: rate-limiter — глобальный статик (utils::rate_limiter::LIMITER),
+  267:     // доступен из kline_poller напрямую, протягивать параметр не нужно.
+  268:     let global_risk = Arc::new(risk::GlobalRiskManager::new());
+  269:     // PATCH P15: portfolio equity base + restore today daily PnL
+  270:     let p15_equity: f64 = config.bots.iter().map(|b| b.initial_balance.to_f64().unwrap_or(0.0)).sum();
+  271:     global_risk.set_equity_base(p15_equity);
+  272:     global_risk.load_persisted_day();
+  273:     tracing::info!(
+  274:         "[P15] GlobalRisk: equity_base={:.2} | daily_stop={} pct of equity | kill_file=KILL",
+  275:         p15_equity,
+  276:         global_risk.stop_pct()
+  277:     );
+  278: 
+  279:     let mut handles = Vec::new();
+  280:     for bot_config in config.bots {
+  281:         let bot_name = bot_config.name.clone();
+  282:         let is_isolated = bot_config.isolated;
+  283: 
+  284:         let symbol = bot_config
+  285:             .symbol
+  286:             .clone()
+  287:             .unwrap_or_else(|| global_symbol.clone());
+  288: 
+  289:         let global_cfg = global.clone();
+  290:         let ts = time_sync.clone();
+  291:         let shutdown_tx_bot = shutdown_tx.clone();
+  292:         let global_risk_bot = global_risk.clone();
+  293: 
+  294:         let hub_key = if is_isolated {
+  295:             format!("{}:{}", bot_name, symbol)
+  296:         } else {
+  297:             format!("common:{}", global_symbol)
+  298:         };
+  299: 
+  300:         let hub = hubs
+  301:             .get(&hub_key)
+  302:             .ok_or_else(|| anyhow::anyhow!("Hub не найден: {}", hub_key))?
+  303:             .clone();
+  304: 
+  305:         tracing::info!(
+  306:             "[{}] Символ: {} | Hub: {} | изолирован: {}",
+  307:             bot_name, symbol, hub_key, is_isolated
+  308:         );
+  309: 
+  310:         let bot_rest_url = bot_config.rest_url_override.as_ref().unwrap_or(&global.rest_url).clone();
+  311:         let filters = if bot_config.market_type == "futures" {
+  312:             if bot_rest_url.contains("bybit") {
+  313:                 bybit_fut_filters.clone()
+  314:             } else if bot_rest_url.contains("okx") {
+  315:                 okx_fut_filters.clone()
+  316:             } else {
+  317:                 binance_fut_filters.clone()
+  318:             }
+  319:         } else {
+  320:             spot_filters.clone()
+  321:         };
+  322: 
+  323:         // ============================================================
+  324:         // ✅ 4а (К-2): СУПЕРВИЗОР
+  325:         // ============================================================
+  326:         let handle = tokio::spawn(async move {
+  327:             const MAX_ATTEMPTS: u32 = u32::MAX; // PATCH P15: unlimited restarts
+  328:             // AUDIT-P6: сторож супервизора. Раньше цикл был 1..=MAX_ATTEMPTS:
+  329:             // после 3-й попытки супервизор умирал (return) до конца процесса —
+  330:             // бот мёртв, открытые позиции без exit-логики/трейлинга. Теперь
+  331:             // после 3 быстрых попыток — вечный slow-retry каждые 600 сек
+  332:             // (тяжёлый startup run_bot не спамим), transient-сбои биржи/WS
+  333:             // само-восстанавливаются без ручного вмешательства.
+  334:             const WATCHDOG_RETRY_SEC: u64 = 600;
+  335:             for attempt in 1..=u32::MAX {
+  336:                 let ws_rx = hub.subscribe();
+  337:                 let shutdown_rx = shutdown_tx_bot.subscribe();
+  338: 
+  339:                 let inner = tokio::spawn(run_bot(
+  340:                     bot_config.clone(),
+  341:                     symbol.clone(),
+  342:                     global_cfg.clone(),
+  343:                     ws_rx,
+  344:                     ts.clone(),
+  345:                     shutdown_rx,
+  346:                     filters.clone(),
+  347:                     hub.clone(),
+  348:                     global_risk_bot.clone(),
+  349:                 ));
+  350: 
+  351:                 match inner.await {
+  352:                     Ok(Ok(())) => return,
+  353:                     Ok(Err(e)) => {
+  354:                         tracing::error!(
+  355:                             "[{}] ❌ бот упал (попытка {}/{}): {:?}",
+  356:                             bot_name, attempt.min(MAX_ATTEMPTS), MAX_ATTEMPTS, e // AUDIT-P6: cap для slow-retry
+  357:                         );
+  358:                     }
+  359:                     Err(join_err) => {
+  360:                         tracing::error!(
+  361:                             "[{}] 💥 задача бота завершена аварийно (паника: {}, попытка {}/{})",
+  362:                             bot_name, join_err.is_panic(), attempt, MAX_ATTEMPTS
+  363:                         );
+  364:                     }
+  365:                 }
+  366: 
+  367:                 metrics::ERRORS_TOTAL.with_label_values(&[&bot_name]).inc();
+  368:                 metrics::BOTS_ACTIVE.with_label_values(&[&bot_name]).set(0);
+  369: 
+  370:                 if attempt == MAX_ATTEMPTS { // AUDIT-P6: сторож — return убран, цикл вечный
+  371:                     tracing::error!(
+  372:                         "[{}] 🚨 быстрые попытки ({}) исчерпаны — включаю СТОРОЖ: \
+  373:                          retry каждые {} сек до успеха. ПОКА БОТ МЁРТВ — \
+  374:                          ОТКРЫТЫЕ ПОЗИЦИИ БЕЗ ПРИСМОТРА, СВЕРЬ С БИРЖЕЙ",
+  375:                         bot_name, MAX_ATTEMPTS, WATCHDOG_RETRY_SEC
+  376:                     );
+  377:                 }
+  378:                 // AUDIT-P6: после исчерпания быстрых попыток — slow-retry.
+  379:                 // PATCH P15: fast retries first, then 5 min, cap 30 min
+  380:                 let backoff = std::time::Duration::from_secs(
+  381:                     if attempt <= 2 { 5 * attempt as u64 }
+  382:                     else if attempt <= 6 { 300 }
+  383:                     else { 1800 }
+  384:                 );
+  385:                 tracing::warn!("[{}] перезапуск через {:?}...", bot_name, backoff);
+  386:                 tokio::time::sleep(backoff).await;
+  387:             }
+  388:         });
+  389:         handles.push(handle);
+  390:     }
+  391: 
+  392:     // ============ GRACEFUL SHUTDOWN ============
+  393:     #[cfg(unix)]
+  394:     {
+  395:         let mut sigterm =
+  396:             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+  397:         tokio::select! {
+  398:             _ = tokio::signal::ctrl_c() => {},
+  399:             _ = sigterm.recv() => {},
+  400:         }
+  401:     }
+  402:     #[cfg(not(unix))]
+  403:     {
+  404:         tokio::signal::ctrl_c().await?;
+  405:     }
+  406:     tracing::warn!("🛑 Получен сигнал остановки — graceful shutdown (до 120 с: maker-выходы в плюс, потом маркет)...");
+  407: 
+  408:     let _ = shutdown_tx.send(());
+  409: 
+  410:     // ✅ МЯГКИЙ SHUTDOWN: дедлайн 120 с
+  411:     let all = futures_util::future::join_all(handles);
+  412:     match tokio::time::timeout(std::time::Duration::from_secs(120), all).await {
+  413:         Ok(_) => tracing::info!("✅ все боты завершились корректно"),
+  414:         Err(_) => tracing::error!(
+  415:             "⏱ 120с истекли — часть ботов не завершилась, процесс завершается. СВЕРЬ ПОЗИЦИИ НА БИРЖЕ"
+  416:         ),
+  417:     }
+  418: 
+  419:     metrics_handle.abort();
+  420:     tracing::info!("✅ Завершение завершено");
+  421:     Ok(())
+  422: }
+  423: 
+  424: /// ✅ 4а: дети бота живут ровно столько, сколько живёт бот.
+  425: async fn run_bot(
+  426:     config: config::BotConfig,
+  427:     symbol: String,
+  428:     global: config::GlobalConfig,
+  429:     ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+  430:     time_sync: exchange::SharedTimeSync,
+  431:     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+  432:     filters: Option<Arc<exchange::FilterRegistry>>,
+  433:     hub: Arc<websocket::WebSocketHub>,
+  434:     global_risk: Arc<risk::GlobalRiskManager>,
+  435: ) -> Result<()> {
+  436:     let mut children = tokio::task::JoinSet::new();
+  437:     let result = run_bot_inner(
+  438:         config,
+  439:         symbol,
+  440:         global,
+  441:         ws_rx,
+  442:         time_sync,
+  443:         shutdown_rx,
+  444:         filters,
+  445:         hub,
+  446:         global_risk,
+  447:         &mut children,
+  448:     )
+  449:     .await;
+  450:     children.abort_all();
+  451:     result
+  452: }
+  453: 
+  454: async fn run_bot_inner(
+  455:     config: config::BotConfig,
+  456:     symbol: String,
+  457:     global: config::GlobalConfig,
+  458:     mut ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+  459:     time_sync: exchange::SharedTimeSync,
+  460:     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+  461:     filters: Option<Arc<exchange::FilterRegistry>>,
+  462:     hub: Arc<websocket::WebSocketHub>,
+  463:     global_risk: Arc<risk::GlobalRiskManager>,
+  464:     children: &mut tokio::task::JoinSet<()>,
+  465: ) -> Result<()> {
+  466:     let bot_name = config.name.clone();
+  467:     let is_isolated = config.isolated;
+  468: 
+  469:     let exchange_client = exchange::create_client(&global, &config, time_sync)?;
+  470: 
+  471:     let is_bybit = config.rest_url_override.as_ref()
+  472:         .map(|u| u.contains("bybit"))
+  473:         .unwrap_or(false);
+  474: 
+  475:     // v4.0: OKX has no Binance-style user-data stream; fills via REST polling.
+  476:     let is_okx = config.rest_url_override.as_ref()
+  477:         .map(|u| u.contains("okx"))
+  478:         .unwrap_or(false);
+  479: 
+  480:     let order_events = if config.market_type == "futures" && !config.simulate && !is_bybit && !is_okx {
+  481:         let rest_base = config
+  482:             .rest_url_override
+  483:             .as_ref()
+  484:             .unwrap_or(&global.rest_url)
+  485:             .trim_end_matches('/')
+  486:             .to_string();
+  487:         let ws_base = config.ws_url_override.clone().unwrap_or(global.ws_url.clone());
+  488:         match exchange::user_stream::UserStream::start(children, &config.api_key, &rest_base, &ws_base).await {
+  489:             Ok(us) => {
+  490:                 tracing::info!("[{}] 🔑 user-data stream запущен (события исполнения + факт-комиссии)", bot_name);
+  491:                 metrics::UDS_ACTIVE.with_label_values(&[&bot_name]).set(1);
+  492:                 Some(exchange::user_stream::OrderEventsRx::new(us.subscribe()))
+  493:             }
+  494:             Err(e) => {
+  495:                 tracing::warn!(
+  496:                     "[{}] user-data stream недоступен ({}) — подтверждение через REST-поллинг, комиссии в fallback-оценке",
+  497:                     bot_name, e
+  498:                 );
+  499:                 metrics::UDS_ACTIVE.with_label_values(&[&bot_name]).set(0);
+  500:                 None
+  501:             }
+  502:         }
+  503:     } else {
+  504:         metrics::UDS_ACTIVE.with_label_values(&[&bot_name]).set(0);
+  505:         None
+  506:     };
+  507: 
+  508:     // ✅ Фаза 3г + 6: свечи для futures через REST
+  509:     if config.market_type == "futures" {
+  510:         let rest_base = config
+  511:             .rest_url_override
+  512:             .as_ref()
+  513:             .unwrap_or(&global.rest_url)
+  514:             .trim_end_matches('/')
+  515:             .to_string();
+  516:         if rest_base.contains("bybit") {
+  517:             exchange::kline_poller::spawn_bybit(
+  518:                 children,
+  519:                 hub.clone(),
+  520:                 rest_base,
+  521:                 symbol.clone(),
+  522:                 config.kline_interval.clone(),
+  523:             );
+  524:         } else if rest_base.contains("okx") {
+  525:             // v4.0: OKX V5 candles via public REST
+  526:             exchange::kline_poller::spawn_okx(
+  527:                 children,
+  528:                 hub.clone(),
+  529:                 rest_base,
+  530:                 symbol.clone(),
+  531:                 config.kline_interval.clone(),
+  532:             );
+  533:         } else {
+  534:             exchange::kline_poller::spawn(
+  535:                 children,
+  536:                 hub.clone(),
+  537:                 rest_base,
+  538:                 symbol.clone(),
+  539:                 config.kline_interval.clone(),
+  540:             );
+  541:         }
+  542:         tracing::info!(
+  543:             "[{}] 📈 kline-поллер запущен (REST, интервал {})",
+  544:             bot_name, config.kline_interval
+  545:         );
+  546:     }
+  547: 
+  548:     let state_manager = Arc::new(state::StateManager::new(&config, &global).await?);
+  549:     let trade_journal =
+  550:         state::trade_journal::TradeJournal::new(&global.db_path, &bot_name).await?;
+  551: 
+  552:     // ============================================================
+  553:     // ✅ 4г: RECONCILIATION при старте (5 попыток V3.2, sync_qty, усыновление)
+  554:     // ============================================================
+  555:     if !config.simulate && config.market_type == "futures" {
+  556:         let mut fetched: Option<Vec<crate::exchange::traits::ExchangePosition>> = None;
+  557:         for attempt in 1..=5u32 {
+  558:             match exchange_client.get_positions().await {
+  559:                 Ok(all) => { fetched = Some(all); break; }
+  560:                 Err(e) => {
+  561:                     // ✅ V3.2: 5 попыток с эскалацией 2/4/6/8с — тестнеты
+  562:                     // отдают 5xx пачками, 3 попытки по 2с не всегда хватало.
+  563:                     tracing::warn!("[{}] reconciliation попытка {}/5: {}", bot_name, attempt, e);
+  564:                     if attempt < 5 {
+  565:                         let pause = 2u64.saturating_mul(attempt as u64);
+  566:                         tokio::time::sleep(std::time::Duration::from_secs(pause)).await;
+  567:                     }
+  568:                 }
+  569:             }
+  570:         }
+  571:         match fetched {
+  572:             Some(all) => {
+  573:                 let exchange_positions: Vec<_> = all
+  574:                     .into_iter()
+  575:                     .filter(|p| p.symbol.eq_ignore_ascii_case(&symbol))
+  576:                     .collect();
+  577:                 let db_positions = state_manager.get_positions();
+  578: 
+  579:                 // 1) Фантомы
+  580:                 for pos in &db_positions {
+  581:                     let on_exchange = exchange_positions
+  582:                         .iter()
+  583:                         .find(|p| p.symbol.eq_ignore_ascii_case(&pos.symbol));
+  584:                     match on_exchange {
+  585:                         None => {
+  586:                             tracing::error!(
+  587:                                 "[{}] 🚨 RECONCILIATION: {} есть в БД, но НЕТ на бирже — фантом",
+  588:                                 bot_name, pos.symbol
+  589:                             );
+  590:                             state_manager.purge_position(&pos.symbol).await;
+  591:                             global_risk.unregister_position(&bot_name, &pos.symbol);
+  592:                         }
+  593:                         Some(ex) => {
+  594:                             let ex_qty = ex.qty.abs();
+  595:                             if (ex_qty - pos.quantity).abs() > pos.quantity * 0.05 {
+  596:                                 tracing::warn!(
+  597:                                     "[{}] 🚨 RECONCILIATION: {} в БД {:.5}, на бирже {:.5} — синхронизирую по бирже",
+  598:                                     bot_name, pos.symbol, pos.quantity, ex_qty
+  599:                                 );
+  600:                                 state_manager.sync_position_qty(&ex.symbol, ex_qty, ex.entry_price).await;
+  601:                             }
+  602:                         }
+  603:                     }
+  604:                 }
+  605: 
+  606:                 // 2) Сироты — усыновляем
+  607:                 for ex in &exchange_positions {
+  608:                     let in_db = db_positions
+  609:                         .iter()
+  610:                         .any(|p| p.symbol.eq_ignore_ascii_case(&ex.symbol));
+  611:                     if !in_db {
+  612:                     let (side_str, qty_abs) = if ex.qty > 0.0 {
+  613:                         ("BUY".to_string(), ex.qty)
+  614:                     } else {
+  615:                         ("SELL".to_string(), ex.qty.abs())
+  616:                     };
+  617: 
+  618:                                        // ✅ ПРАВКА #5: synthetic SL для усыновлённой позиции.
+  619:                     // На бирже SL нет — без синтетического стопа state_manager
+  620:                     // не сможет закрыть позицию до max_position_duration_sec.
+  621:                     // 2% от entry — аварийный стоп, согласуется с risk_per_trade_pct.
+  622:                     const EMERGENCY_SL_PCT: f64 = 0.02;
+  623:                     let synthetic_sl = if ex.qty > 0.0 {
+  624:                         ex.entry_price * (1.0 - EMERGENCY_SL_PCT)
+  625:                     } else {
+  626:                         ex.entry_price * (1.0 + EMERGENCY_SL_PCT)
+  627:                     };
+  628:                     // ✅ ПРАВКА #3.1: два масштаба риска.
+  629:                     //   per_unit_risk  → add_position_with_risk (для R-multiple в логах)
+  630:                     //   total_risk     → global_risk.register_position (для max_concurrent_risk_pct)
+  631:                     let per_unit_risk = (ex.entry_price - synthetic_sl).abs();
+  632:                     let total_risk = qty_abs * per_unit_risk;
+  633: 
+  634:                     tracing::warn!(
+  635:                         "[{}] 🚨 RECONCILIATION: позиция {} ({:.5}) есть на бирже, но нет в БД — \
+  636:                          УСЫНОВЛЯЮ с синтетическим SL={:.8} ({}% от входа), риск/ед={:.8}, \
+  637:                          тотал={:.4} USDT, таймер {}с закроет",
+  638:                         bot_name, ex.symbol, ex.qty, synthetic_sl,
+  639:                         EMERGENCY_SL_PCT * 100.0,
+  640:                         per_unit_risk, total_risk,
+  641:                         config.max_position_duration_sec
+  642:                     );
+  643: 
+  644:                     state_manager
+  645:                         .add_position_with_risk(
+  646:                             ex.symbol.clone(),
+  647:                             side_str,
+  648:                             ex.entry_price,
+  649:                             qty_abs,
+  650:                             Some(synthetic_sl),
+  651:                             None,
+  652:                             "Reconciled".to_string(),
+  653:                             per_unit_risk,  // ← было reconciled_risk (total)
+  654:                             0.0,
+  655:                             0.0,
+  656:                         )
+  657:                         .await;
+  658:                     global_risk.register_position(
+  659:                         &bot_name,
+  660:                         &ex.symbol,
+  661:                         total_risk,  // ← total, для max_concurrent_risk_pct
+  662:                     );
+  663:                     }
+  664:                 }
+  665: 
+  666:                 tracing::info!(
+  667:                     "[{}] ✅ reconciliation: в БД {}, на бирже {} — сверка проведена",
+  668:                     bot_name, db_positions.len(), exchange_positions.len()
+  669:                 );
+  670:             }
+  671:             None => {
+  672:                 // ✅ v3.5: честно — попыток было 5 (ретраи 2/4/6/8с)
+  673:                 tracing::warn!(
+  674:                     "[{}] reconciliation недоступен после 5 попыток — продолжаем по данным БД",
+  675:                     bot_name
+  676:                 );
+  677:             }
+  678:         }
+  679:     }
+  680: 
+  681:     // ✅ Decorator: устойчивый reconcile (retry + timeout + circuit + DB fallback)
+  682:     //    ВАЖНО: после startup-reconcile (строгий обмен с биржей для фантомов),
+  683:     //    но до periodic-reconciler и ExecutionEngine — теперь все запросы
+  684:     //    get_positions() идут через обёртку.
+  685:     let exchange_client: Arc<dyn exchange::ExchangeClient> = Arc::new(
+  686:         // PATCH P15: strict by default on prod (non-testnet URL)
+  687:         exchange::resilient_client::ResilientClient::new(
+  688:             exchange_client.clone(),
+  689:             state_manager.clone(),
+  690:             !config
+  691:                 .rest_url_override
+  692:                 .clone()
+  693:                 .unwrap_or_else(|| global.rest_url.clone())
+  694:                 .to_lowercase()
+  695:                 .contains("testnet"),
+  696:         ),
+  697:     ) as Arc<dyn exchange::ExchangeClient>;
+  698: 
+  699:     // ============================================================
+  700:     // ✅ bk10: фоновое начисление funding
+  701:     // ============================================================
+  702:     if config.market_type == "futures" {
+  703:         let sm = state_manager.clone();
+  704:         let fut_rest = config
+  705:             .rest_url_override
+  706:             .as_ref()
+  707:             .unwrap_or(&global.rest_url)
+  708:             .clone();
+  709:         let tracker = exchange::FundingTracker::new(&fut_rest);
+  710:         let market_sym = symbol.clone();
+  711:         let bot_tag = bot_name.clone();
+  712: 
+  713:         children.spawn(async move {
+  714:             const POLL_SECS: u64 = 300;
+  715:             const SLOTS_IN_8H: f64 = 8.0 * 3600.0 / POLL_SECS as f64;
+  716: 
+  717:             let mut interval = tokio::time::interval(
+  718:                 std::time::Duration::from_secs(POLL_SECS),
+  719:             );
+  720:             interval.tick().await;
+  721: 
+  722:             loop {
+  723:                 interval.tick().await;
+  724: 
+  725:                 let mut symbols = sm.open_symbols();
+  726:                 if !symbols.contains(&market_sym) {
+  727:                     symbols.push(market_sym.clone());
+  728:                 }
+  729: 
+  730:                 for sym in symbols {
+  731:                     match tracker.get_rate(&sym).await {
+  732:                         Ok(rate_info) => {
+  733:                             let positions = sm.get_positions();
+  734:                             for pos in positions.iter().filter(|p| p.symbol == sym) {
+  735:                                 let notional = pos.quantity * pos.current_price;
+  736:                                 let raw = rate_info.rate * notional / SLOTS_IN_8H;
+  737:                                 let signed = match pos.side {
+  738:                                     crate::state::state_manager::PositionSide::Long => -raw,
+  739:                                     crate::state::state_manager::PositionSide::Short => raw,
+  740:                                 };
+  741:                                 sm.accrue_funding(&sym, signed);
+  742:                             }
+  743:                         }
+  744:                         Err(e) => {
+  745:                             tracing::debug!(
+  746:                                 "[{}] funding rate для {} недоступен: {}",
+  747:                                 bot_tag, sym, e
+  748:                             );
+  749:                         }
+  750:                     }
+  751:                 }
+  752:             }
+  753:         });
+  754: 
+  755:         tracing::info!(
+  756:             "[{}] 💸 Funding tracker запущен (poll 5 мин, символ {})",
+  757:             bot_name, symbol
+  758:         );
+  759:     }
+  760: 
+  761:     // ============================================================
+  762:     // ✅ Периодический reconciliation (5 мин, двойное подтверждение)
+  763:     // ============================================================
+  764:     if !config.simulate && config.market_type == "futures" {
+  765:         let sm = state_manager.clone();
+  766:         let client = exchange_client.clone();
+  767:         let gr = global_risk.clone();
+  768:         let bot = bot_name.clone();
+  769:         let sym = symbol.clone();
+  770:         let max_dur = config.max_position_duration_sec;
+  771:         // P18: registry for the reconciler task (orphan SL tick rounding)
+  772:         let filters = filters.clone();
+  773:         children.spawn(async move {
+  774:             let mut iv = tokio::time::interval(std::time::Duration::from_secs(300));
+  775:             iv.tick().await;
+  776:             let mut pending_purge: std::collections::HashSet<String> = Default::default();
+  777:             let mut pending_adopt: std::collections::HashSet<String> = Default::default();
+  778:             loop {
+  779:                 iv.tick().await;
+  780:                 let Ok(all) = client.get_positions().await else { continue };
+  781:                 let ex_pos: Vec<_> = all.into_iter()
+  782:                     .filter(|p| p.symbol.eq_ignore_ascii_case(&sym))
+  783:                     .collect();
+  784:                 let db_pos = sm.get_positions();
+  785: 
+  786:                 let mut purges_now: std::collections::HashSet<String> = Default::default();
+  787:                 let mut adopts_now: std::collections::HashSet<String> = Default::default();
+  788:                 for pos in &db_pos {
+  789:                     if !ex_pos.iter().any(|p| p.symbol.eq_ignore_ascii_case(&pos.symbol)) {
+  790:                         purges_now.insert(pos.symbol.clone());
+  791:                     }
+  792:                 }
+  793:                 for ex in &ex_pos {
+  794:                     if !db_pos.iter().any(|p| p.symbol.eq_ignore_ascii_case(&ex.symbol)) {
+  795:                         adopts_now.insert(ex.symbol.clone());
+  796:                     }
+  797:                 }
+  798: 
+  799:                 for s in purges_now.intersection(&pending_purge) {
+  800:                     tracing::warn!("[{}] 🧹 (период.) фантом {} подтверждён дважды — удаляю из state", bot, s);
+  801:                     sm.purge_position(s).await;
+  802:                     gr.unregister_position(&bot, s);
+  803:                 }
+  804:                 pending_purge = purges_now;
+  805: 
+  806:                 for s in adopts_now.intersection(&pending_adopt) {
+  807:                     if let Some(ex) = ex_pos.iter().find(|p| p.symbol.eq_ignore_ascii_case(s)) {
+  808:                         let (side_str, qty_abs) = if ex.qty > 0.0 {
+  809:                             ("BUY".to_string(), ex.qty)
+  810:                         } else {
+  811:                             ("SELL".to_string(), ex.qty.abs())
+  812:                         };
+  813: 
+  814:                         // ✅ ПРАВКА #5 (период.): synthetic SL для усыновлённой сироты.
+  815:                         const EMERGENCY_SL_PCT: f64 = 0.02;
+  816:                         let synthetic_sl = if ex.qty > 0.0 {
+  817:                             ex.entry_price * (1.0 - EMERGENCY_SL_PCT)
+  818:                         } else {
+  819:                             ex.entry_price * (1.0 + EMERGENCY_SL_PCT)
+  820:                         };
+  821:                         // ✅ ПРАВКА #3.1: два масштаба (per_unit vs total).
+  822:                         let per_unit_risk = (ex.entry_price - synthetic_sl).abs();
+  823:                         let total_risk = qty_abs * per_unit_risk;
+  824: 
+  825:                         tracing::warn!(
+  826:                             "[{}] 🚨 (период.) сирота {} ({:.0}) подтверждена дважды — \
+  827:                              УСЫНОВЛЯЮ с synthetic SL={:.8} ({}%), риск/ед={:.8}, \
+  828:                              тотал={:.4}, таймер {}с закроет",
+  829:                             bot, s, qty_abs, synthetic_sl,
+  830:                             EMERGENCY_SL_PCT * 100.0,
+  831:                             per_unit_risk, total_risk, max_dur
+  832:                         );
+  833: 
+  834:                         sm.add_position_with_risk(
+  835:                             s.clone(), side_str, ex.entry_price, qty_abs,
+  836:                             Some(synthetic_sl), None,
+  837:                             "Reconciled".to_string(),
+  838:                             per_unit_risk,
+  839:                             0.0, 0.0,
+  840:                         ).await;
+  841:                         gr.register_position(&bot, s, total_risk);
+  842:                     }
+  843:                 }
+  844:                 pending_adopt = adopts_now;
+  845: 
+  846:                 // AUDIT-P7: ретрай биржевого SL. sl_order_id=None при живой
+  847:                 // позиции = STOP_MARKET НЕ стоит на бирже (постановка 2/2
+  848:                 // сорвалась при входе, либо сирота усыновлена — ей биржевой
+  849:                 // стоп вообще не ставился). Софт-защита умирает вместе с
+  850:                 // процессом — потому каждые 5 мин догонаю стоп на биржу.
+  851:                 // Читаем СВЕЖИЙ список: фантомы этого тика не получат стоп,
+  852:                 // свежие сироты получат сразу. NB: возможен дубль со старым
+  853:                 // стопом прежней сессии (оба closePosition=true — безвредно),
+  854:                 // чистка зомби-ордеров — территория P8.
+  855:                 for pos in sm.get_positions().into_iter().filter(|p| p.sl_order_id.is_none()) {
+  856:                     let Some(sl) = pos.stop_loss else { continue };
+  857:                     let close_side = if pos.side == state::state_manager::PositionSide::Long { "SELL" } else { "BUY" };
+  858:                     // P18: synthetic 2% SL is not tick-aligned -> -1111. Round it.
+  859:                     let sl = match filters.as_ref().and_then(|r| r.get(&pos.symbol).ok()) {
+  860:                         Some(f) => match rust_decimal::Decimal::from_f64(sl) {
+  861:                             Some(d) => f.round_price(d).to_f64().unwrap_or(sl),
+  862:                             None => sl,
+  863:                         },
+  864:                         None => sl,
+  865:                     };
+  866:                     match client
+  867:                         .place_protective_order(&pos.symbol, close_side, true, sl, None)
+  868:                         .await
+  869:                     {
+  870:                         Ok(o) => {
+  871:                             sm.set_sl_order_id(&pos.symbol, o.order_id.to_string()).await;
+  872:                             tracing::warn!(
+  873:                                 "[{}] 🛡 (период.) SL-фолбэк: STOP_MARKET #{} @ {:.8} догнан для {}",
+  874:                                 bot, o.order_id, sl, pos.symbol
+  875:                             );
+  876:                         }
+  877:                         Err(e) => {
+  878:                             tracing::error!(
+  879:                                 "[{}] 🛡 (период.) SL-фолбэк для {} снова не удался: {}",
+  880:                                 bot, pos.symbol, e
+  881:                             );
+  882:                         }
+  883:                     }
+  884:                 }
+  885:             }
+  886:         });
+  887:         tracing::info!("[{}] 🔄 периодический reconciliation запущен (5 мин, двойное подтверждение)", bot_name);
+  888:     }
+  889:         // ✅ 4б: риск-менеджер — ОДИН на весь процесс
+  890:     let risk_manager = risk::RiskManager::new(&config, &global, global_risk.clone()).await?;
+  891:     // P16: live equity handle (initial + persisted realized PnL, updated on close)
+  892:     let equity_handle = risk_manager.equity_handle();
+  893: 
+  894:     let execution_engine = execution::ExecutionEngine::new(
+  895:         &config,
+  896:         exchange_client.clone(),
+  897:         state_manager.clone(),
+  898:         global_risk.clone(),
+  899:         filters,
+  900:         order_events,
+  901:     );
+  902: 
+  903:     let mut regime_detector = strategies::market_regime::MarketRegimeDetector::new(400, 0.30, 0.05);
+  904: 
+  905:     let mut strategy_agent = agents::StrategyAgent::new(&config);
+  906:     let mut risk_agent = agents::RiskAgent::new(risk_manager);
+  907:     let mut execution_agent = agents::ExecutionAgent::new(execution_engine);
+  908:     let state_agent = agents::StateAgent::new(state_manager.clone(), exchange_client.clone());
+  909: 
+  910:     let ob_analyzer = strategies::OrderBookAnalyzer::new(
+  911:         global.orderbook_density_threshold.to_f64().unwrap_or(5.0),
+  912:     );
+  913:     let ob_state = Arc::new(std::sync::RwLock::new(strategies::OrderBookState::default()));
+  914:     let mut strategy = strategies::create_strategy(&config, &symbol, ob_state, ob_analyzer)?;
+  915:     // P16: sync strategy sizing base with live equity at startup
+  916:     let eq0 = equity_handle.read().map(|g| *g).unwrap_or(0.0);
+  917:     strategy.set_live_equity(eq0);
+  918:     tracing::info!("[{}] P16: sizing base = live equity {:.2}", bot_name, eq0);
+  919: 
+  920:     tracing::info!(
+  921:         "[{}] Стратегия: {} | {}",
+  922:         bot_name,
+  923:         strategy.name(),
+  924:         if is_isolated { "🔒 ИЗОЛИРОВАН" } else { "🔗 ОБЩИЙ" }
+  925:     );
+  926: 
+  927:     metrics::BOTS_ACTIVE.with_label_values(&[&bot_name]).set(1);
+  928:     metrics::SUSPENDED.with_label_values(&[&bot_name]).set(0);
+  929:     tracing::info!("[{}] ✅ Бот запущен", bot_name);
+  930: 
+  931:     // ============================================================
+  932:     // ✅ v3.5: ГАРАНТИРОВАННЫЙ ПРОГРЕВ СТРАТЕГИИ СВЕЧАМИ
+  933:     // ============================================================
+  934:     // Живой лог 12:50 (gold_dca): backfill (249 свечей) опубликован в
+  935:     // broadcast в 12:50:33, а цикл бота стартовал читать канал только в
+  936:     // 12:50:44 — 5 флаковых reconciliation-попыток (2/4/6/8с) держали
+  937:     // старт ~21с. Приёмник на момент публикации отсутствовал → tokio
+  938:     // broadcast молча выбросил все 250 свечей → keltner навсегда холодный
+  939:     // (candles=0, ema200=n/a; DIAG «backfill дошла до цикла» так и не
+  940:     // появился, хотя keltner_dca.rs v3.4 был на месте).
+  941:     // Лечение двойное:
+  942:     //   (1) вычитать из broadcast-буфера всё, что уже накопилось для нас;
+  943:     //   (2) если буфер пуст/тонкий — добрать историю из кэша хаба
+  944:     //       (последние 600 REST-свечей), МИНУЯ broadcast.
+  945:     // Сигналы из прогрева НЕ исполняются (возврат process() игнорируется),
+  946:     // дубли исключены строгим возрастанием timestamp.
+  947:     let mut warm_fed: u64 = 0;
+  948:     let mut warm_from_cache: u64 = 0;
+  949:     let mut warm_signals_dropped: u64 = 0;
+  950:     let mut warm_books_dropped: u64 = 0;
+  951:     // ✅ v3.5: общий гард дедупа между тремя путями доставки свечей
+  952:     // (буфер broadcast / кэш хаба / сам broadcast-цикл) — кто первый
+  953:     // отдал свечу стратегии, тот и прав; копии отсекаются по timestamp.
+  954:     let mut last_fed_candle_ts: i64 = 0;
+  955: 
+  956:     // (1) буфер broadcast: всё, что успело накопиться, пока шёл старт бота
+  957:     loop {
+  958:         match ws_rx.try_recv() {
+  959:             Ok(message) => {
+  960:                 if let websocket::WebSocketMessage::Kline(k) = &message {
+  961:                     if !k.is_closed || k.timestamp <= last_fed_candle_ts {
+  962:                         continue;
+  963:                     }
+  964:                     if k.is_backfill && !strategy.wants_backfill() {
+  965:                         continue;
+  966:                     }
+  967:                     last_fed_candle_ts = k.timestamp;
+  968:                     match strategy_agent.process(&message, strategy.as_mut()).await {
+  969:                         Ok(Some(_)) => warm_signals_dropped += 1,
+  970:                         Ok(_) => {}
+  971:                         Err(e) => {
+  972:                             tracing::warn!(
+  973:                                 "[{}] прогрев (буфер): стратегия отклонила свечу: {}",
+  974:                                 bot_name, e
+  975:                             );
+  976:                             break;
+  977:                         }
+  978:                     }
+  979:                     warm_fed += 1;
+  980:                 } else {
+  981:                     // книги/трейды на старте не нужны — цикл получит свежие
+  982:                     warm_books_dropped += 1;
+  983:                 }
+  984:             }
+  985:             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+  986:             Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+  987:             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+  988:                 tracing::warn!(
+  989:                     "[{}] прогрев: буфер отстал на {} сообщений — потерянную часть доберём из кэша",
+  990:                     bot_name, n
+  991:                 );
+  992:             }
+  993:         }
+  994:     }
+  995: 
+  996:     // (2) добор из кэша хаба: случай «приёмника не было в момент публикации»
+  997:     // (старт задержан reconciliation-ретраями; рестарт супервизора на попытке
+  998:     // 2/3 — поллер backfill повторно НЕ делает, кэш хаба остаётся).
+  999:     if warm_fed < 200 {
+ 1000:         for k in hub.recent_klines() {
+ 1001:             if !k.is_closed || k.timestamp <= last_fed_candle_ts {
+ 1002:                 continue;
+ 1003:             }
+ 1004:             if !strategy.wants_backfill() {
+ 1005:                 continue;
+ 1006:             }
+ 1007:             last_fed_candle_ts = k.timestamp;
+ 1008:             // кэш-свеча трактуется как история: сигналы по ней запрещены
+ 1009:             let mut hist = k.clone();
+ 1010:             hist.is_backfill = true;
+ 1011:             let msg = websocket::WebSocketMessage::Kline(hist);
+ 1012:             match strategy_agent.process(&msg, strategy.as_mut()).await {
+ 1013:                 Ok(Some(_)) => warm_signals_dropped += 1,
+ 1014:                 Ok(_) => {}
+ 1015:                 Err(e) => {
+ 1016:                     tracing::warn!(
+ 1017:                         "[{}] прогрев (кэш): стратегия отклонила свечу: {}",
+ 1018:                         bot_name, e
+ 1019:                     );
+ 1020:                     break;
+ 1021:                 }
+ 1022:             }
+ 1023:             warm_from_cache += 1;
+ 1024:         }
+ 1025:     }
+ 1026: 
+ 1027:     if warm_fed > 0 || warm_from_cache > 0 || warm_books_dropped > 0 {
+ 1028:         tracing::info!(
+ 1029:             "[{}] 🔥 прогрев стратегии: {} свечей из буфера + {} из кэша хаба{}{}",
+ 1030:             bot_name,
+ 1031:             warm_fed,
+ 1032:             warm_from_cache,
+ 1033:             if warm_signals_dropped > 0 {
+ 1034:                 format!(" | сигналов истории отклонено: {}", warm_signals_dropped)
+ 1035:             } else {
+ 1036:                 String::new()
+ 1037:             },
+ 1038:             if warm_books_dropped > 0 {
+ 1039:                 format!(" | книг/трейдов мимо цикла: {}", warm_books_dropped)
+ 1040:             } else {
+ 1041:                 String::new()
+ 1042:             }
+ 1043:         );
+ 1044:     }
+ 1045: 
+ 1046:     let mut log_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+ 1047:     log_interval.tick().await;
+ 1048: 
+ 1049:     let mut position_check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+ 1050:     position_check_interval.tick().await;
+ 1051: 
+ 1052:     // ✅ DIAG v3.4.1: трассировка доставки сообщений/backfill до цикла бота.
+ 1053:     // Временный инструментальный пакет — убирается после диагностики.
+ 1054:     let mut diag_backfill_seen: u64 = 0;
+ 1055:     let mut diag_first_msg_logged: bool = false;
+ 1056:     let mut diag_gate_skips: u64 = 0;
+ 1057: 
+ 1058:     loop {
+ 1059:         tokio::select! {
+ 1060:             biased;
+ 1061: 
+ 1062:             // ============================================================
+ 1063:             // SHUTDOWN — мягкий: maker-цена «безубыток+», без партиалов
+ 1064:             // ============================================================
+ 1065:             _ = shutdown_rx.recv() => {
+ 1066:                 tracing::warn!("[{}] 🛑 Shutdown — закрываю позиции терпеливо (maker в плюс, таймаут, потом маркет)", bot_name);
+ 1067:                 // 🔧 ПАТЧ-SWEEP: гасим висячие ордера ДО закрытия позиций —
+ 1068:                 // иначе graceful shutdown уходит, оставив живые GTX на книге
+ 1069:                 // (кейс 2026-10-07: 890191413/890191847 пережили shutdown).
+ 1070:                 // 🔧 ЭТАП B: при живой позиции защитные ордера (pr_*) ОСТАЮТСЯ
+ 1071:                 // сторожить её на бирже; при флэте — снимается всё.
+ 1072:                 let positions_alive = !state_manager.get_positions().is_empty();
+ 1073:                 if let Ok(oo) = exchange_client.get_open_orders(&symbol).await {
+ 1074:                     for o in oo {
+ 1075:                         if positions_alive {
+ 1076:                             tracing::warn!(
+ 1077:                                 "[{}] sweep-пропуск: ордер {} оставлен (позиция жива — защиты сторожат)",
+ 1078:                                 bot_name, o.order_id
+ 1079:                             );
+ 1080:                             continue;
+ 1081:                         }
+ 1082:                         match exchange_client.cancel_order(&symbol, o.order_id).await {
+ 1083:                             Ok(_) => tracing::warn!(
+ 1084:                                 "[{}] sweep: отменён висячий ордер {} ({})",
+ 1085:                                 bot_name, o.order_id, o.status
+ 1086:                             ),
+ 1087:                             Err(e) => tracing::error!(
+ 1088:                                 "[{}] sweep: отмена {} не удалась: {}",
+ 1089:                                 bot_name, o.order_id, e
+ 1090:                             ),
+ 1091:                         }
+ 1092:                     }
+ 1093:                 }
+ 1094:                 if let Ok(all) = exchange_client.get_positions().await {
+ 1095:                     for p in all.iter().filter(|p| p.symbol.eq_ignore_ascii_case(&symbol)) {
+ 1096:                         if p.qty.abs() > 0.0 {
+ 1097:                             tracing::error!(
+ 1098:                                 "[{}] 🚨 sweep: на бирже позиция {:.5} {} при завершении — СВЕРЬ ВРУЧНУЮ",
+ 1099:                                 bot_name, p.qty, p.symbol
+ 1100:                             );
+ 1101:                         }
+ 1102:                     }
+ 1103:                 }
+ 1104:                 let positions = state_manager.get_positions();
+ 1105:                 for pos in positions {
+ 1106:                     // ✅ ПРАВКА #5: skip maker для убыточных shutdown-позиций.
+ 1107:                     // Раньше всегда пытались maker через max(current, breakeven_target).
+ 1108:                     // Для loss-позиций breakeven_target выше рынка — maker не заполнится
+ 1109:                     // за 10с, потом маркет по хуже цене = slippage $0.31+/позиция.
+ 1110:                     // Теперь: profit → maker в плюс (Exit_Shutdown_Maker);
+ 1111:                     //          loss  → сразу маркет (Exit_Shutdown_Market).
+ 1112:                     let close_signal = {
+ 1113:                         let fee_rt = match pos.origin_strategy.as_str() {
+ 1114:                             // PATCH P15: SpreadCapture fee arm removed (pepe cleanup)
+ 1115:                             _ => 0.0005_f64 * 2.0,
+ 1116:                         };
+ 1117:                         let is_long = pos.side == state::state_manager::PositionSide::Long;
+ 1118:                         let breakeven_target = if is_long {
+ 1119:                             pos.entry_price * (1.0 + fee_rt * 1.5)
+ 1120:                         } else {
+ 1121:                             pos.entry_price * (1.0 - fee_rt * 1.5)
+ 1122:                         };
+ 1123:                         let is_profitable = if is_long {
+ 1124:                             pos.current_price >= breakeven_target
+ 1125:                         } else {
+ 1126:                             pos.current_price <= breakeven_target
+ 1127:                         };
+ 1128: 
+ 1129:                         let (price, strategy_name) = if is_profitable {
+ 1130:                             // profit → maker в плюс (цель = breakeven+, заполнится если цена дойдёт)
+ 1131:                             (breakeven_target, "Exit_Shutdown_Maker")
+ 1132:                         } else {
+ 1133:                             // loss → маркет сразу (signal.price не важен для маркет-пути)
+ 1134:                             (pos.current_price, "Exit_Shutdown_Market")
+ 1135:                         };
+ 1136: 
+ 1137:                         strategies::Signal {
+ 1138:                             symbol: pos.symbol.clone(),
+ 1139:                             side: if is_long { "SELL".to_string() } else { "BUY".to_string() },
+ 1140:                             price,
+ 1141:                             quantity: pos.quantity,
+ 1142:                             strategy_name: strategy_name.to_string(),
+ 1143:                             leverage: 1.0,
+ 1144:                             stop_loss: None,
+ 1145:                             take_profit: None,
+ 1146:                             atr_hint: pos.atr_hint,
+ 1147:                             entry_spread: pos.entry_spread,
+ 1148:                         }
+ 1149:                     };
+ 1150:                     match execution_agent.execute(close_signal.clone()).await {
+ 1151:                         Ok(execution::ExecOutcome::Exit(pnl)) => {
+ 1152:                             risk_agent.record_trade(&close_signal.symbol, pnl);
+ 1153:                             metrics::SUSPENDED.with_label_values(&[&bot_name]).set(
+ 1154:                                 if risk_agent.is_suspended() { 1 } else { 0 }
+ 1155:                             );
+ 1156:                             let _ = trade_journal
+ 1157:                                 .record_close(&close_signal, pnl)
+ 1158:                                 .await;
+ 1159:                             global_risk.add_closed_pnl(pnl); // PATCH P15
+ 1160:                             tracing::info!(
+ 1161:                                 "[{}] Shutdown-close {} | PnL={:+.4}",
+ 1162:                                 bot_name, close_signal.symbol, pnl
+ 1163:                             );
+ 1164:                         }
+ 1165:                         Ok(execution::ExecOutcome::ExitUnconfirmed) => {
+ 1166:                             tracing::error!(
+ 1167:                                 "[{}] Shutdown-close {}: НЕ подтверждено — позиция осталась на бирже, СВЕРЬ ВРУЧНУЮ",
+ 1168:                                 bot_name, close_signal.symbol
+ 1169:                             );
+ 1170:                         }
+ 1171:                         Ok(other) => tracing::warn!("[{}] Shutdown-close: {:?}", bot_name, other),
+ 1172:                         Err(e) => tracing::error!("[{}] Shutdown-close: {:?}", bot_name, e),
+ 1173:                     }
+ 1174:                 }
+ 1175:                 state_manager.persist_positions().await;
+ 1176:                 risk_agent.flush_stats().await;
+ 1177:                 tracing::info!(
+ 1178:                     "[{}] 📊 ФИНАЛ СЕССИИ | WR={:.1}% | PF={:.2} | trades={} | realized_pnl={:+.4} | suspended={}",
+ 1179:                     bot_name,
+ 1180:                     risk_agent.win_rate() * 100.0,
+ 1181:                     risk_agent.profit_factor(),
+ 1182:                     risk_agent.total_trades(),
+ 1183:                     risk_agent.realized_pnl(),
+ 1184:                     if risk_agent.is_suspended() { "ДА" } else { "нет" }
+ 1185:                 );
+ 1186:                 break;
+ 1187:             }
+ 1188: 
+ 1189:             // ============================================================
+ 1190:             // WS MESSAGES
+ 1191:             // ============================================================
+ 1192:             msg_result = ws_rx.recv() => {
+ 1193:                 let message = match msg_result {
+ 1194:                     Ok(m) => m,
+ 1195:                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+ 1196:                         tracing::warn!("[{}] Отстал на {} сообщений", bot_name, n);
+ 1197:                         continue;
+ 1198:                     }
+ 1199:                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+ 1200:                         tracing::error!("[{}] WS hub закрыт", bot_name);
+
+##### P19-ENDFILE|C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs|lines=1606
+
+##### P19-GREP|reqwest::Client|Client::builder|pool_idle|pool_max|connect_timeout|\.timeout\(
+download_bybit_klines.rs:3: use reqwest::Client;
+download_bybit_klines.rs:113: let client = Client::builder()
+download_bybit_klines.rs:114: .timeout(Duration::from_secs(30))
+binance_futures.rs:6: use reqwest::Client;
+binance_futures.rs:32: client: Client::builder()
+binance_futures.rs:33: .timeout(Duration::from_secs(10))
+binance_rest.rs:6: use reqwest::Client;
+binance_rest.rs:32: client: Client::builder()
+binance_rest.rs:33: .timeout(Duration::from_secs(10))
+bybit_futures.rs:28: use reqwest::Client;
+bybit_futures.rs:52: client: Client::builder()
+bybit_futures.rs:53: .timeout(Duration::from_secs(10))
+funding.rs:2: use reqwest::Client;
+kline_poller.rs:44: let client = reqwest::Client::builder()
+kline_poller.rs:45: .timeout(Duration::from_secs(10))
+kline_poller.rs:262: let client = reqwest::Client::builder()
+kline_poller.rs:263: .timeout(Duration::from_secs(10))
+kline_poller.rs:519: let client = reqwest::Client::builder()
+kline_poller.rs:520: .timeout(Duration::from_secs(10))
+okx_futures.rs:16: use reqwest::Client;
+okx_futures.rs:72: client: Client::builder().timeout(Duration::from_secs(10)).build().unwrap_or_default(),
+symbol_filters.rs:54: let client = reqwest::Client::builder()
+symbol_filters.rs:55: .timeout(std::time::Duration::from_secs(30))
+symbol_filters.rs:138: let client = reqwest::Client::builder()
+symbol_filters.rs:139: .timeout(std::time::Duration::from_secs(30))
+symbol_filters.rs:210: let client = reqwest::Client::builder()
+symbol_filters.rs:211: .timeout(std::time::Duration::from_secs(30))
+symbol_filters.rs:298: async fn fetch_json_with_retry(client: &reqwest::Client, url: &str, attempts: u32) -> Result<Value> {
+time_sync.rs:2: use reqwest::Client;
+time_sync.rs:50: let client = Client::builder()
+time_sync.rs:51: .timeout(Duration::from_secs(5))
+time_sync.rs:87: let client = Client::builder()
+time_sync.rs:88: .timeout(Duration::from_secs(5))
+user_stream.rs:131: let client = reqwest::Client::builder()
+user_stream.rs:132: .timeout(Duration::from_secs(10))
+user_stream.rs:147: let client = reqwest::Client::builder()
+user_stream.rs:148: .timeout(Duration::from_secs(10))
+telegram.rs:26: let client = reqwest::Client::builder()
+telegram.rs:27: .timeout(Duration::from_secs(8))
+mod.rs:217: let client = reqwest::Client::builder()
+mod.rs:218: .timeout(std::time::Duration::from_secs(8)).build().ok()?;
+mod.rs:300: let client = reqwest::Client::builder()
+mod.rs:301: .timeout(std::time::Duration::from_secs(8)).build().ok()?;
+mod.rs:339: let client = reqwest::Client::builder()
+mod.rs:340: .timeout(Duration::from_secs(10)).build().unwrap_or_default();
+mod.rs:422: let client = reqwest::Client::builder()
+mod.rs:423: .timeout(Duration::from_secs(10))
+
+##### P19-GREP|streams=|bookTicker|@kline|aggTrade|agg_trade|SUBSCRIBE|subscribe
+main.rs:8: use tracing_subscriber::{fmt, EnvFilter};
+main.rs:23: use tracing_subscriber::prelude::*;
+main.rs:41: tracing_subscriber::registry()
+main.rs:336: let ws_rx = hub.subscribe();
+main.rs:337: let shutdown_rx = shutdown_tx_bot.subscribe();
+main.rs:492: Some(exchange::user_stream::OrderEventsRx::new(us.subscribe()))
+main.rs:1216: websocket::WebSocketMessage::BookTicker(_) => "BookTicker",
+state_agent.rs:30: // ✅ 3г: цена позиции по миду bookTicker
+state_agent.rs:31: WebSocketMessage::BookTicker(bt) => {
+analyze_slippage.rs:1: //! analyze_slippage.rs — калибровка модели проскальзывания на bookTicker-датасете.
+analyze_slippage.rs:4: //!   cargo run --release --bin analyze_slippage -- data/bookticker_live
+analyze_slippage.rs:5: //!   cargo run --release --bin analyze_slippage -- data/bookticker_live --symbol 1000PEPEUSDT
+analyze_slippage.rs:6: //!   cargo run --release --bin analyze_slippage -- data/bookticker_live --sizes 100,500,1000,5000
+analyze_slippage.rs:9: //!   1. Сканирует директорию на CSV-файлы bookTicker (формат: SYMBOL-YYYY-MM-DD.csv)
+backtest.rs:2: //!   --data trades      — только aggTrades
+backtest.rs:4: //!   --data spread      — merged bookTicker + aggTrades (для spread_capture)
+backtest.rs:5: //!   --data book        — только bookTicker (без aggTrades, fill симулируется)
+backtest.rs:9: //!   backtest <trades_dir> --bot <name> --data spread --bookticker <book_dir>
+backtest.rs:26: BookTickerMessage, KlineMessage, TradeMessage, WebSocketMessage,
+backtest.rs:41: Book, // ✅ НОВОЕ: только bookTicker, без aggTrades
+backtest.rs:99: bookticker_path: Option<String>,
+backtest.rs:114: bookticker_path: None,
+backtest.rs:126: "--bookticker" => { args.bookticker_path = Some(argv[i + 1].clone()); i += 2; }
+backtest.rs:129: "trades" | "aggTrades" => DataType::Trades,
+backtest.rs:132: "book" | "bookticker" => DataType::Book,
+backtest.rs:147: println!("  backtest <trades_path> --bot <name> --data spread --bookticker <book_path>");
+backtest.rs:196: DataType::Spread => "spread (bookTicker + aggTrades)",
+backtest.rs:197: DataType::Book => "bookTicker only (fill simulated)",
+backtest.rs:242: return Err(anyhow!("No bookTicker CSV files found in {}", args.primary_path));
+backtest.rs:244: println!("\n📚 Found {} bookTicker files", book_files.len());
+backtest.rs:269: let book_path = args.bookticker_path.as_ref()
+backtest.rs:270: .ok_or_else(|| anyhow!("--bookticker required for --data spread"))?;
+backtest.rs:277: return Err(anyhow!("No matching trades/bookticker pairs found"));
+backtest.rs:421: let t = match parse_agg_trade(&line, symbol) { Some(t) => t, None => continue };
+backtest.rs:489: // MERGED STREAM (bookTicker + aggTrades)
+backtest.rs:542: let t = match parse_agg_trade(&line, symbol) {
+backtest.rs:559: msg = WebSocketMessage::BookTicker(bt);
+backtest.rs:647: // ✅ НОВАЯ ФУНКЦИЯ: BOOK-ONLY STREAM (только bookTicker)
+backtest.rs:648: // Симулирует fill по bookTicker данным, без aggTrades.
+backtest.rs:704: let msg = WebSocketMessage::BookTicker(bt.clone());
+backtest.rs:769: fn parse_agg_trade(line: &str, symbol: &str) -> Option<TradeMessage> {
+backtest.rs:805: fn parse_book_ticker(line: &str, symbol: &str) -> Option<BookTickerMessage> {
+backtest.rs:813: Some(BookTickerMessage {
+record_bookticker.rs:1: //! Recorder для Binance Futures bookTicker через WebSocket.
+record_bookticker.rs:6: //!   cargo run --release --bin record_bookticker -- DOGEUSDT
+record_bookticker.rs:8: //! Файл растёт в data/bookticker_live/DOGEUSDT-YYYY-MM-DD.csv
+record_bookticker.rs:20: const DATA_DIR: &str = "data/bookticker_live";
+record_bookticker.rs:26: .ok_or_else(|| anyhow!("Usage: record_bookticker <SYMBOL> (e.g. DOGEUSDT)"))?;
+record_bookticker.rs:32: tracing_subscriber::fmt()
+record_bookticker.rs:37: let url = format!("{}/{}@bookTicker", WS_BASE, symbol_lower);
+ws_probe.rs:10: async fn probe(name: &str, url: &str, subscribe: Option<&str>) {
+ws_probe.rs:19: if let Some(payload) = subscribe {
+ws_probe.rs:21: tracing::error!("[{}] subscribe send: {}", name, e);
+ws_probe.rs:41: if v.get("result").is_some() { continue; } // ack на SUBSCRIBE
+ws_probe.rs:48: "aggTrade" => agg += 1,
+ws_probe.rs:49: "bookTicker" => book += 1,
+ws_probe.rs:54: tracing::info!("[{}] ИТОГ за {}с: aggTrade={} bookTicker={} kline={} другое={}",
+ws_probe.rs:61: tracing_subscriber::fmt().with_env_filter("info").init();
+ws_probe.rs:69: // A) Контроль: спотовый aggTrade — в работающем боте он приходит
+ws_probe.rs:70: probe("A-спот-aggTrade-КОНТРОЛЬ",
+ws_probe.rs:71: &format!("wss://stream.binance.com:9443/stream?streams={s}@aggTrade"),
+ws_probe.rs:74: // B) Фьючерсный aggTrade по BTCUSDT — зависит ли от символа
+ws_probe.rs:75: probe("B-fstream-btcusdt-aggTrade",
+ws_probe.rs:76: "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade",
+ws_probe.rs:81: &format!("wss://fstream.binance.com/stream?streams={s}@markPrice"),
+ws_probe.rs:86: &format!("wss://fstream.binance.com/stream?streams={s}@miniTicker"),
+kline_poller.rs:2: //! fstream отдаёт только bookTicker (доказано пробником), REST fapi работает полностью.
+user_stream.rs:125: pub fn subscribe(&self) -> broadcast::Receiver<OrderEvent> {
+user_stream.rs:126: self.events_tx.subscribe()
+market_regime.rs:64: WebSocketMessage::BookTicker(bt) => {
+mod.rs:15: // fstream доказанно отдаёт только bookTicker, свечи приходят через
+mod.rs:49: BookTicker(BookTickerMessage),
+mod.rs:89: pub struct BookTickerMessage {
+mod.rs:169: // ✅ 3г: fstream из нашего региона отдаёт только bookTicker (пробник, 2 сети).
+mod.rs:172: format!("{s}@bookTicker", s = sym)
+mod.rs:175: "{s}@aggTrade/{s}@bookTicker/{s}@depth20@100ms/{s}@kline_1m",
+mod.rs:196: "{}/stream?streams={}",
+mod.rs:209: let full = format!("{}/stream?streams={}", ep.trim_end_matches('/'), streams);
+mod.rs:220: // kline/orderbook intentionally NOT subscribed: 1m candles in the shared
+mod.rs:224: let subscribe_msg: Option<String> = if is_bybit {
+mod.rs:226: "{{\"op\":\"subscribe\",\"args\":[\"tickers.{s}\",\"publicTrade.{s}\"]}}",
+mod.rs:232: "{{\"op\":\"subscribe\",\"args\":[{{\"channel\":\"tickers\",\"instId\":\"{i}\"}},{{\"channel\":\"trades\",\"instId\":\"{i}\"}}]}}",
+mod.rs:268: subscribe_msg.as_deref(),
+mod.rs:371: pub fn subscribe(&self) -> broadcast::Receiver<WebSocketMessage> {
+mod.rs:372: self.tx.subscribe()
+mod.rs:427: subscribe_msg: Option<&str>,
+mod.rs:458: let is_okx = subscribe_msg.map(|m| m.contains("instId")).unwrap_or(false);    let is_bybit = !is_okx && subscribe_msg.is_some();
+mod.rs:460: // changed fields - without this cache BookTicker would be choppy.
+mod.rs:463: if let Some(sub) = subscribe_msg {
+mod.rs:466: return Err(anyhow!("Bybit subscribe send failed: {}", e));
+mod.rs:524: WebSocketMessage::BookTicker(_) => { health.book_tickers.fetch_add(1, Ordering::Relaxed); }
+mod.rs:670: // (snapshot + delta) into full BookTickerMessage values.
+mod.rs:680: // Handles exactly what we subscribe to: tickers.XAUUSDT (best bid/ask) and
+mod.rs:721: return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+mod.rs:771: if stream.contains("@aggTrade") {
+mod.rs:783: if stream.contains("@bookTicker") {
+mod.rs:793: return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+mod.rs:805: if stream.contains("@kline") {
+mod.rs:877: return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+
+##### P19-GREP|broadcast::|mpsc::|watch::|unbounded|channel\(
+main.rs:230: let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(4);
+main.rs:429: ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+main.rs:431: shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+main.rs:458: mut ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+main.rs:460: mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+main.rs:985: Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+main.rs:986: Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+main.rs:987: Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+main.rs:1195: Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+main.rs:1199: Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+user_stream.rs:54: pub type OrderEventsRx = tokio::sync::Mutex<broadcast::Receiver<OrderEvent>>;
+user_stream.rs:57: events_tx: broadcast::Sender<OrderEvent>,
+user_stream.rs:70: let (events_tx, _) = broadcast::channel::<OrderEvent>(512);
+user_stream.rs:125: pub fn subscribe(&self) -> broadcast::Receiver<OrderEvent> {
+user_stream.rs:162: async fn connect_and_read(url: &str, tx: &broadcast::Sender<OrderEvent>) -> Result<()> {
+execution_engine.rs:290: Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+execution_engine.rs:291: Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+mod.rs:148: tx: broadcast::Sender<WebSocketMessage>,
+mod.rs:216: let (tx, _rx) = broadcast::channel::<WebSocketMessage>(5000);
+mod.rs:371: pub fn subscribe(&self) -> broadcast::Receiver<WebSocketMessage> {
+mod.rs:428: tx: broadcast::Sender<WebSocketMessage>,
+mod.rs:850: ) -> Result<(tokio::sync::mpsc::Receiver<WebSocketMessage>, JoinHandle<()>)> {
+
+##### P19-GREP|struct Candle|on_candle|new_candle|push_candle|update_candle
+bounce_trader.rs:149: fn push_candle(&mut self, high: f64, low: f64, close: f64, ts: i64) {
+bounce_trader.rs:288: self.push_candle(kline.high, kline.low, kline.close, kline.timestamp);
+bounce_trader.rs:295: self.push_candle(kline.high, kline.low, kline.close, kline.timestamp);
+
+##### P19-DONE

@@ -1,0 +1,80 @@
+ВАЛИДАЦИЯ P32 (2026-11-09, собрано ассистентом; проверка пакета-фикса сборки)
+
+## Диагноз краша (по логу пользователя от 2026-11-09)
+
+Симптом: cargo run --release --bin wfa_momentum -> 6 из 6 попыток
+  exit code: 0xc0000005 (STATUS_ACCESS_VIOLATION) внутри rustc.exe,
+  ни одной ошибки Rust (E0xxx) в логе, краш детерминированный.
+Командная строка rustc из лога содержит: -C opt-level=3 -C lto
+  -C codegen-units=1 -C strip=debuginfo  <- это [profile.release]
+  из Cargo.toml проекта (opt-level=3, lto=true, codegen-units=1; SHA256
+  71607214c7d2fa8dbc0a80829e04875eac6506f078ac734465ef047ef26a0694).
+Вывод: падает сам компилятор на фазе fat-LTO кодогенерации/линковки
+  (исходник к этому моменту уже успешно разобран и проверен типизатором —
+  иначе были бы E0xxx, а не молчаливый STATUS_ACCESS_VIOLATION).
+Код и данные P31 ни при чём: тот же wfa_momentum.rs (SHA256 совпадает с
+  эталоном пакета P31) ранее прошёл все 6 эталонных прогонов и
+  построчную кросс-валидацию с независимым референсом (см. VALIDATION_P31).
+
+## Внешние подтверждения класса сбоя (проверено research-агентом, URL открыты)
+
+- rust-lang/rust#85598: fat LTO валит rustc на Windows без внятного
+  сообщения (LLVM умирает при нехватке памяти; bad_alloc не ловится).
+- rust-lang/rust#88199: STATUS_ACCESS_VIOLATION на release-сборках
+  x86_64-pc-windows-msvc.
+- rust-lang/rust#143078 + тред users.rust-lang.org "Always
+  STATUS_ACCESS_VIOLATION error in cargo build": третий фактор —
+  AV/EDR-инъекции в процессы; лестница триажа: cargo clean, чистая
+  переустановка тулчейна, исключения антивируса, проверка RAM.
+- rust-lang/rust#134119: детерминированный 0xc0000005 даже на hello-world,
+  закрыт как C-defective-hardware (битая RAM даёт такой же симптом).
+- Cargo Book (doc.rust-lang.org/cargo/reference/profiles.html):
+  lto=false отключает fat-LTO; кастомные профили ([profile.wfa] +
+  inherits="release") стабильны с Cargo 1.57; наследование по-ключевое —
+  явное lto=false перекрывает унаследованное lto=true.
+- Cargo Book (environment variables): CARGO_PROFILE_RELEASE_LTO=off и
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 — документированный override,
+  принимает "off"/"false"/"thin"/"fat"/"true"; это даёт мгновенный обход
+  без правки файлов.
+
+## Проверено при сборке пакета (в песочнице)
+
+[1] Симуляция патча: взят реальный Cargo.toml проекта (upload/Cargo.toml),
+    воспроизведено добавление блока ровно как делает apply_p32.ps1
+    (пустая строка + here-string блок), результат распарсен TOML-парсером:
+      profile.wfa = {inherits="release", lto=false, codegen-units=16}
+      profile.release не тронут (opt-level=3, lto=true, codegen-units=1)
+    -> TOML валиден, ключи на месте. OK
+[2] Идемпотентность: повторное применение патча не создаёт второй блок
+    (регэскп (?m)^\s*\[profile\.wfa\] находит существующий). OK
+[3] Линт PowerShell-скриптов (apply_p32.ps1, run_wfa_p32.ps1):
+    чистый ASCII (кодировка безопасна для Windows PowerShell 5.1),
+    here-strings сбалансированы, скобки/строки закрыты, нет backtick/pipe
+    в конце строк, нет автопеременной $args (переименована в $cargoArgs). OK
+[4] Сверка команд прогонов с README_P31: те же 6 конфигураций
+    (taofull / tao450 / tao450_stress(fee 0.0006, spread 0.0003) /
+    btc450 / eth450 / sol450), отличается только --profile wfa. OK
+[5] Кросс-чек кода: wfa_momentum.rs в песочнице побайтово равен копии,
+    выданной в P31 — SHA256 обеих копий
+    58798effc56465cbad7c1fe33e79382f259c63122e11813cfa0ebd1da3064188.
+    P32 его не трогает. OK
+
+## Ограничение валидации
+
+Полной пересборки под новым профилем в песочнице не делалось: тулчейн Rust
+в текущей сессии отсутствует (среда пересоздана), а Linux-сборка не
+воспроизводит Windows-краш (эталонные прогоны P31 уже проходили на Linux
+с этим же кодом). Риск низкий: P32 меняет только профиль сборки,
+семантика кастомных профилей и override-переменных задокументирована
+в Cargo Book. Приёмка на машине пользователя: числа прогонов должны
+совпасть с эталонной таблицей README_P32 1:1 (f64-арифметика не зависит
+от LTO).
+
+## Эталонные числа приёмки (= VALIDATION_P31, Rust 1.99.1, seed 42)
+
+run_taofull:       prod n=0 | rr2.0 n=159 R=-29.68 PF=0.76 | rr2.5 n=162 R=-51.86 PF=0.64
+run_tao450:        prod n=0 | rr2.0 n=76 R=-10.89       | rr2.5 n=80 R=-19.51
+run_tao450_stress: rr2.0 n=76 R=-13.17                | rr2.5 n=80 R=-22.51
+run_btc450:        rr2.0 n=74 R=-20.62                | rr2.5 n=76 R=-28.85
+run_eth450:        rr2.0 n=54 R=-19.02                | rr2.5 n=54 R=-24.27
+run_sol450:        rr2.0 n=56 R=-6.24                 | rr2.5 n=57 R=+0.22

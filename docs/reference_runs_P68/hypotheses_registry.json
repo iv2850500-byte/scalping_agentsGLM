@@ -1,0 +1,6 @@
+[
+{"id":"H1_range_fade","class":"mean_reversion","seed":42,"registered_before_eval":true,"grid":[{"lookback":20,"z":2,"period":0,"vol_mult":0},{"lookback":20,"z":2.5,"period":0,"vol_mult":0},{"lookback":40,"z":2,"period":0,"vol_mult":0},{"lookback":40,"z":2.5,"period":0,"vol_mult":0}],
+ "data":[{"file":"../p33_build/P33/data/TAOUSDT-1h-450d.csv","fnv1a":"88e8efb1079a87e4"},{"file":"../p33_build/P33/data/ETHUSDT-1h-full.csv","fnv1a":"9669c7858a4f7448"},{"file":"../p33_build/P33/data/BTCUSDT-1h-full.csv","fnv1a":"6e51af77ff3003e3"},{"file":"../../download/klines/INJUSDT-1h.csv","fnv1a":"ff93f7c30d2e8d4a"}]},
+{"id":"H2_donchian_breakout","class":"breakout","seed":42,"registered_before_eval":true,"grid":[{"lookback":0,"z":0,"period":20,"vol_mult":1.1},{"lookback":0,"z":0,"period":20,"vol_mult":1.3},{"lookback":0,"z":0,"period":55,"vol_mult":1.1},{"lookback":0,"z":0,"period":55,"vol_mult":1.3}],
+ "data":[{"file":"../p33_build/P33/data/TAOUSDT-1h-450d.csv","fnv1a":"88e8efb1079a87e4"},{"file":"../p33_build/P33/data/ETHUSDT-1h-full.csv","fnv1a":"9669c7858a4f7448"},{"file":"../p33_build/P33/data/BTCUSDT-1h-full.csv","fnv1a":"6e51af77ff3003e3"},{"file":"../../download/klines/INJUSDT-1h.csv","fnv1a":"ff93f7c30d2e8d4a"}]}
+]

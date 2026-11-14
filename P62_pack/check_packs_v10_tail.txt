@@ -1,0 +1,7 @@
+
+# ===================== appended by P62 (v10 tail) =====================
+try {
+$c62 = (Get-ChildItem .\src -Recurse -Filter *.rs | Select-String -Pattern 'P62/' -AllMatches | ForEach-Object { $_.Matches.Count } | Measure-Object -Sum).Sum
+if ($null -eq $c62) { $c62 = 0 }
+('markers P62/: {0,3}   installed if 18 (telegram hub v2: instant entry/close alerts via journal funnel, coalescing, rate-limit; day-loss 50/80/100; P15 warnings 50/80; breaker trip; supervisor restarts; KILL watch)' -f $c62)
+} catch { ('tail error: {0}' -f $_) }

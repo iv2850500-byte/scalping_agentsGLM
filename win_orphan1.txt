@@ -1,0 +1,154 @@
+﻿2026-10-07T01:35:14.839804Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=8261 | вход=0.00425430 | тек=0.00426600 | Δ=+0.275% | 297с | SL=0.00424434 | TP=0.00428418 | PnL=+0.0967 | funding=+0.0000 | fees=0.0060 | R=+1.17
+2026-10-07T01:35:14.840381Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.0967 USDT
+2026-10-07T01:35:17.738796Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [pepe_spread] 1000PEPEUSDT | ЛОНГ 8261.00000 | вход=0.00425430 выход=0.00425280 | 300с
+2026-10-07T01:35:17.756867Z  INFO scalping_agents: 🔔 [pepe_spread] СДЕЛКА ЗАКРЫТА | результат=loss | PnL=-0.0324 USDT
+2026-10-07T01:35:21.133454Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00425270 ask=0.00427920 | спред=0.623% (eff.min 0.216%) | bid_qty=19485875 | мидΔ=-0.001% | entry=0.00425270 | TP=0.00428450 | SL=0.00424210 | qty=11320 (риск≤11321, ликв≤58457625) | gross=+0.359976 | net=+0.340648
+2026-10-07T01:35:21.133967Z  INFO scalping_agents: [pepe_spread] 🎯 СИГНАЛ: BUY 11320.00000 1000PEPEUSDT @ 0.004253
+2026-10-07T01:35:33.454678Z  INFO scalping_agents::execution::execution_engine: [pepe_spread] ✅ maker исполнен (id=890126705, комиссии=0.009045)
+2026-10-07T01:35:33.455092Z  INFO scalping_agents::execution::execution_engine: ✅ ВХОД ИСПОЛНЕН [pepe_spread] BUY 11320.00000 1000PEPEUSDT @ 0.00425270 (сигнал 0.00425270) | fee≈0.0200% | id=890126705 | факт-комиссия=0.009045
+2026-10-07T01:35:33.455439Z  INFO scalping_agents::state::state_manager: [pepe_spread] 📐 R-менеджмент: 1000PEPEUSDT риск/ед = 0.00001060 (0.249%), ATR=0.00000000, спред=0.6231% | BE@+1R, partial@+1.5R, trail
+2026-10-07T01:35:33.471491Z  INFO scalping_agents: [pepe_spread] ✅ ВХОД: BUY 11320.00000 @ 0.00425270
+2026-10-07T01:35:44.843824Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00426450 | Δ=+0.277% | 11с | SL=0.00424210 | TP=0.00428450 | PnL=+0.1336 | funding=+0.0000 | fees=0.0090 | R=+1.11
+2026-10-07T01:35:44.844537Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.1336 USDT
+2026-10-07T01:36:14.843396Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00426440 | Δ=+0.275% | 41с | SL=0.00424210 | TP=0.00428450 | PnL=+0.1324 | funding=+0.0000 | fees=0.0090 | R=+1.10
+2026-10-07T01:36:14.843937Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.1324 USDT
+2026-10-07T01:36:44.839950Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424800 | Δ=-0.111% | 71с | SL=0.00424210 | TP=0.00428450 | PnL=-0.0532 | funding=+0.0000 | fees=0.0090 | R=-0.44
+2026-10-07T01:36:44.840488Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.0532 USDT
+2026-10-07T01:37:05.839727Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T01:37:05.840500Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #88 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T01:37:14.852764Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424420 | Δ=-0.200% | 101с | SL=0.00424210 | TP=0.00428450 | PnL=-0.0962 | funding=+0.0000 | fees=0.0090 | R=-0.80
+2026-10-07T01:37:14.853587Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.0962 USDT
+2026-10-07T01:37:35.843075Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T01:37:37.630161Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T01:37:44.838527Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424395 | Δ=-0.206% | 131с | SL=0.00424210 | TP=0.00428450 | PnL=-0.0991 | funding=+0.0000 | fees=0.0090 | R=-0.83
+2026-10-07T01:37:44.839263Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.0991 USDT
+2026-10-07T01:38:14.848599Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424350 | Δ=-0.216% | 161с | SL=0.00424210 | TP=0.00428450 | PnL=-0.1041 | funding=+0.0000 | fees=0.0090 | R=-0.87
+2026-10-07T01:38:14.849144Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.1041 USDT
+2026-10-07T01:38:44.839742Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424285 | Δ=-0.232% | 191с | SL=0.00424210 | TP=0.00428450 | PnL=-0.1115 | funding=+0.0000 | fees=0.0090 | R=-0.93
+2026-10-07T01:38:44.841997Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.1115 USDT
+2026-10-07T01:39:14.842455Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424460 | Δ=-0.190% | 221с | SL=0.00424210 | TP=0.00428450 | PnL=-0.0917 | funding=+0.0000 | fees=0.0090 | R=-0.76
+2026-10-07T01:39:14.843007Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.0917 USDT
+2026-10-07T01:39:44.843205Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424615 | Δ=-0.154% | 251с | SL=0.00424210 | TP=0.00428450 | PnL=-0.0741 | funding=+0.0000 | fees=0.0090 | R=-0.62
+2026-10-07T01:39:44.843776Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.0741 USDT
+2026-10-07T01:40:14.840519Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=11320 | вход=0.00425270 | тек=0.00424670 | Δ=-0.141% | 281с | SL=0.00424210 | TP=0.00428450 | PnL=-0.0679 | funding=+0.0000 | fees=0.0090 | R=-0.57
+2026-10-07T01:40:14.841044Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-0.0679 USDT
+2026-10-07T01:40:35.157086Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [pepe_spread] 1000PEPEUSDT | ЛОНГ 11320.00000 | вход=0.00425270 выход=0.00424710 | 301с
+2026-10-07T01:40:35.167300Z  INFO scalping_agents: 🔔 [pepe_spread] СДЕЛКА ЗАКРЫТА | результат=loss | PnL=-0.0916 USDT
+2026-10-07T01:45:01.255156Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T01:45:01.256071Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #89 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T01:45:31.258837Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T01:45:33.534833Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T01:46:20.153446Z  INFO scalping_agents::strategies::spread_capture: 📊 [1000PEPEUSDT] спред 0.0141% < eff.min 0.2160% (ждём глубокого расширения)
+2026-10-07T01:46:25.797141Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T01:46:25.798250Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #90 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T01:46:55.802311Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T01:46:57.465252Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T01:51:59.399506Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00424130 ask=0.00425230 | спред=0.259% (eff.min 0.216%) | bid_qty=19980958 | мидΔ=+0.057% | entry=0.00424130 | TP=0.00425450 | SL=0.00423690 | qty=27272 (риск≤27273, ликв≤59942874) | gross=+0.359990 | net=+0.313651
+2026-10-07T01:51:59.400064Z  INFO scalping_agents: [pepe_spread] 🎯 СИГНАЛ: BUY 27272.00000 1000PEPEUSDT @ 0.004241
+2026-10-07T01:52:12.406781Z  WARN scalping_agents::execution::execution_engine: [pepe_spread] maker частично (15418.00000 из 27272.00000) — берём исполненную часть
+2026-10-07T01:52:12.407557Z  INFO scalping_agents::execution::execution_engine: ✅ ВХОД ИСПОЛНЕН [pepe_spread] BUY 15418.00000 1000PEPEUSDT @ 0.00424130 (сигнал 0.00424130) | fee≈0.0200% | id=890131847 | факт-комиссия=0.012069
+2026-10-07T01:52:12.408183Z  INFO scalping_agents::state::state_manager: [pepe_spread] 📐 R-менеджмент: 1000PEPEUSDT риск/ед = 0.00000440 (0.104%), ATR=0.00000000, спред=0.2594% | BE@+1R, partial@+1.5R, trail
+2026-10-07T01:52:12.425781Z  INFO scalping_agents: [pepe_spread] ✅ ВХОД: BUY 15418.00000 @ 0.00424130
+2026-10-07T01:52:14.849090Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=15418 | вход=0.00424130 | тек=0.00424545 | Δ=+0.098% | 2с | SL=0.00423690 | TP=0.00425450 | PnL=+0.0640 | funding=+0.0000 | fees=0.0121 | R=+0.94
+2026-10-07T01:52:14.849654Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.0640 USDT
+2026-10-07T01:52:44.850698Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=15418 | вход=0.00424130 | тек=0.00424465 | Δ=+0.079% | 32с | SL=0.00423690 | TP=0.00425450 | PnL=+0.0517 | funding=+0.0000 | fees=0.0121 | R=+0.76
+2026-10-07T01:52:44.851246Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.0517 USDT
+2026-10-07T01:53:14.852102Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=15418 | вход=0.00424130 | тек=0.00424395 | Δ=+0.062% | 62с | SL=0.00423690 | TP=0.00425450 | PnL=+0.0409 | funding=+0.0000 | fees=0.0121 | R=+0.60
+2026-10-07T01:53:14.852912Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.0409 USDT
+2026-10-07T01:53:44.848260Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=15418 | вход=0.00424130 | тек=0.00424310 | Δ=+0.042% | 92с | SL=0.00423690 | TP=0.00425450 | PnL=+0.0278 | funding=+0.0000 | fees=0.0121 | R=+0.41
+2026-10-07T01:53:44.849081Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=+0.0278 USDT
+2026-10-07T01:54:02.777746Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [pepe_spread] 1000PEPEUSDT | ЛОНГ 15418.00000 | вход=0.00424130 выход=0.00423570 | 110с
+2026-10-07T01:54:02.780257Z  WARN scalping_agents::risk::circuit_breaker: 🔴 CIRCUIT BREAKER TRIP: 3 убытков за 1800s
+2026-10-07T01:54:02.793575Z  INFO scalping_agents: 🔔 [pepe_spread] СДЕЛКА ЗАКРЫТА | результат=loss | PnL=-0.1245 USDT
+2026-10-07T01:54:02.795481Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00423570 ask=0.00425010 | спред=0.340% (eff.min 0.216%) | bid_qty=19252635 | мидΔ=-0.001% | entry=0.00423570 | TP=0.00425298 | SL=0.00422994 | qty=20833 (риск≤20833, ликв≤57757905) | gross=+0.359994 | net=+0.324625
+2026-10-07T01:54:02.797785Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:20.318370Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T01:54:20.319177Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #91 (endpoint 0): WS отключён | переподключение через 30 сек
+2026-10-07T01:54:27.310469Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00423220 ask=0.00425010 | спред=0.423% (eff.min 0.216%) | bid_qty=10002155 | мидΔ=-0.037% | entry=0.00423220 | TP=0.00425368 | SL=0.00422504 | qty=16759 (риск≤16760, ликв≤30006465) | gross=+0.359983 | net=+0.331540
+2026-10-07T01:54:27.311474Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:32.808340Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00423110 ask=0.00425010 | спред=0.449% (eff.min 0.216%) | bid_qty=10000000 | мидΔ=-0.011% | entry=0.00423110 | TP=0.00425390 | SL=0.00422350 | qty=15789 (риск≤15789, ликв≤30000000) | gross=+0.359989 | net=+0.333195
+2026-10-07T01:54:32.808874Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:37.873059Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00423010 ask=0.00425010 | спред=0.473% (eff.min 0.216%) | bid_qty=20003059 | мидΔ=-0.011% | entry=0.00423010 | TP=0.00425410 | SL=0.00422210 | qty=15000 (риск≤15000, ликв≤60009177) | gross=+0.360000 | net=+0.334547
+2026-10-07T01:54:37.873987Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:43.528268Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00423000 ask=0.00425010 | спред=0.475% (eff.min 0.216%) | bid_qty=14329450 | мидΔ=-0.001% | entry=0.00423000 | TP=0.00425412 | SL=0.00422196 | qty=14925 (риск≤14925, ликв≤42988350) | gross=+0.359991 | net=+0.334666
+2026-10-07T01:54:43.528822Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:49.488385Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422990 ask=0.00425010 | спред=0.478% (eff.min 0.216%) | bid_qty=29031411 | мидΔ=-0.001% | entry=0.00422990 | TP=0.00425414 | SL=0.00422182 | qty=14851 (риск≤14851, ликв≤87094233) | gross=+0.359988 | net=+0.334789
+2026-10-07T01:54:49.489444Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:50.347018Z  INFO scalping_agents::websocket: Подключаюсь к wss://stream.binancefuture.com/stream?streams=dogeusdt@bookTicker
+2026-10-07T01:54:55.576072Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422960 ask=0.00425010 | спред=0.485% (eff.min 0.216%) | bid_qty=19153613 | мидΔ=-0.001% | entry=0.00422960 | TP=0.00425420 | SL=0.00422140 | qty=14634 (риск≤14634, ликв≤57460839) | gross=+0.359996 | net=+0.335166
+2026-10-07T01:54:55.577120Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:54:55.695680Z  INFO scalping_agents::websocket: ✅ WS ПОДКЛЮЧЁН | HTTP 101 Switching Protocols
+2026-10-07T01:55:00.859648Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422920 ask=0.00425010 | спред=0.494% (eff.min 0.216%) | bid_qty=29597432 | мидΔ=-0.001% | entry=0.00422920 | TP=0.00425428 | SL=0.00422084 | qty=14354 (риск≤14354, ликв≤88792296) | gross=+0.359998 | net=+0.335644
+2026-10-07T01:55:00.860693Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:05.906108Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422880 ask=0.00425010 | спред=0.504% (eff.min 0.216%) | bid_qty=10002380 | мидΔ=-0.001% | entry=0.00422880 | TP=0.00425436 | SL=0.00422028 | qty=14084 (риск≤14085, ликв≤30007140) | gross=+0.359987 | net=+0.336092
+2026-10-07T01:55:05.907371Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:10.989076Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422870 ask=0.00425010 | спред=0.506% (eff.min 0.216%) | bid_qty=38294657 | мидΔ=+0.000% | entry=0.00422870 | TP=0.00425438 | SL=0.00422014 | qty=14018 (риск≤14019, ликв≤114883971) | gross=+0.359982 | net=+0.336199
+2026-10-07T01:55:10.990005Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:16.416192Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422860 ask=0.00425010 | спред=0.508% (eff.min 0.216%) | bid_qty=19265647 | мидΔ=-0.001% | entry=0.00422860 | TP=0.00425440 | SL=0.00422000 | qty=13953 (риск≤13953, ликв≤57796941) | gross=+0.359987 | net=+0.336315
+2026-10-07T01:55:16.417677Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:21.634309Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422840 ask=0.00425010 | спред=0.513% (eff.min 0.216%) | bid_qty=10000000 | мидΔ=-0.002% | entry=0.00422840 | TP=0.00425444 | SL=0.00421972 | qty=13824 (риск≤13825, ликв≤30000000) | gross=+0.359977 | net=+0.336524
+2026-10-07T01:55:21.635243Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:28.489281Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422820 ask=0.00425010 | спред=0.518% (eff.min 0.216%) | bid_qty=84271 | мидΔ=+0.000% | entry=0.00422820 | TP=0.00425448 | SL=0.00421944 | qty=13698 (риск≤13699, ликв≤252813) | gross=+0.359983 | net=+0.336744
+2026-10-07T01:55:28.490266Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:33.993120Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422820 ask=0.00425010 | спред=0.518% (eff.min 0.216%) | bid_qty=77140 | мидΔ=+0.000% | entry=0.00422820 | TP=0.00425448 | SL=0.00421944 | qty=13698 (риск≤13699, ликв≤231420) | gross=+0.359983 | net=+0.336744
+2026-10-07T01:55:33.993681Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:40.270102Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422820 ask=0.00425010 | спред=0.518% (eff.min 0.216%) | bid_qty=71201 | мидΔ=+0.000% | entry=0.00422820 | TP=0.00425448 | SL=0.00421944 | qty=13698 (риск≤13699, ликв≤213603) | gross=+0.359983 | net=+0.336744
+2026-10-07T01:55:40.271038Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:45.723911Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422820 ask=0.00425010 | спред=0.518% (eff.min 0.216%) | bid_qty=65266 | мидΔ=+0.000% | entry=0.00422820 | TP=0.00425448 | SL=0.00421944 | qty=13698 (риск≤13699, ликв≤195798) | gross=+0.359983 | net=+0.336744
+2026-10-07T01:55:45.724848Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:51.383944Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422880 ask=0.00425010 | спред=0.504% (eff.min 0.216%) | bid_qty=18412710 | мидΔ=+0.007% | entry=0.00422880 | TP=0.00425436 | SL=0.00422028 | qty=14084 (риск≤14085, ликв≤55238130) | gross=+0.359987 | net=+0.336092
+2026-10-07T01:55:51.385042Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:55:56.525903Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422880 ask=0.00425010 | спред=0.504% (eff.min 0.216%) | bid_qty=18412710 | мидΔ=-0.015% | entry=0.00422880 | TP=0.00425436 | SL=0.00422028 | qty=14084 (риск≤14085, ликв≤55238130) | gross=+0.359987 | net=+0.336092
+2026-10-07T01:55:56.526963Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:01.837270Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422880 ask=0.00425010 | спред=0.504% (eff.min 0.216%) | bid_qty=14697530 | мидΔ=+0.000% | entry=0.00422880 | TP=0.00425436 | SL=0.00422028 | qty=14084 (риск≤14085, ликв≤44092590) | gross=+0.359987 | net=+0.336092
+2026-10-07T01:56:01.838361Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:07.353612Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422820 ask=0.00425010 | спред=0.518% (eff.min 0.216%) | bid_qty=56946 | мидΔ=+0.000% | entry=0.00422820 | TP=0.00425448 | SL=0.00421944 | qty=13698 (риск≤13699, ликв≤170838) | gross=+0.359983 | net=+0.336744
+2026-10-07T01:56:07.354593Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:13.156097Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422820 ask=0.00425010 | спред=0.518% (eff.min 0.216%) | bid_qty=47445 | мидΔ=+0.000% | entry=0.00422820 | TP=0.00425448 | SL=0.00421944 | qty=13698 (риск≤13699, ликв≤142335) | gross=+0.359983 | net=+0.336744
+2026-10-07T01:56:13.156801Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:18.673042Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422880 ask=0.00425010 | спред=0.504% (eff.min 0.216%) | bid_qty=13159215 | мидΔ=+0.000% | entry=0.00422880 | TP=0.00425436 | SL=0.00422028 | qty=14084 (риск≤14085, ликв≤39477645) | gross=+0.359987 | net=+0.336092
+2026-10-07T01:56:18.673585Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:25.215138Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422870 ask=0.00425010 | спред=0.506% (eff.min 0.216%) | bid_qty=21828088 | мидΔ=+0.000% | entry=0.00422870 | TP=0.00425438 | SL=0.00422014 | qty=14018 (риск≤14019, ликв≤65484264) | gross=+0.359982 | net=+0.336199
+2026-10-07T01:56:25.216046Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:34.901041Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422870 ask=0.00425010 | спред=0.506% (eff.min 0.216%) | bid_qty=910005 | мидΔ=+0.006% | entry=0.00422870 | TP=0.00425438 | SL=0.00422014 | qty=14018 (риск≤14019, ликв≤2730015) | gross=+0.359982 | net=+0.336199
+2026-10-07T01:56:34.902772Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:43.099533Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422650 ask=0.00425010 | спред=0.558% (eff.min 0.216%) | bid_qty=5767662 | мидΔ=-0.020% | entry=0.00422650 | TP=0.00425482 | SL=0.00421706 | qty=12711 (риск≤12712, ликв≤17302986) | gross=+0.359976 | net=+0.338414
+2026-10-07T01:56:43.100681Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:48.142045Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422640 ask=0.00425010 | спред=0.561% (eff.min 0.216%) | bid_qty=10008476 | мидΔ=-0.021% | entry=0.00422640 | TP=0.00425484 | SL=0.00421692 | qty=12658 (риск≤12658, ликв≤30025428) | gross=+0.359994 | net=+0.338522
+2026-10-07T01:56:48.142593Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:53.816352Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422580 ask=0.00425010 | спред=0.575% (eff.min 0.216%) | bid_qty=43969057 | мидΔ=-0.007% | entry=0.00422580 | TP=0.00425496 | SL=0.00421608 | qty=12345 (риск≤12346, ликв≤131907171) | gross=+0.359980 | net=+0.339041
+2026-10-07T01:56:53.817305Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:56:59.689205Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422570 ask=0.00425010 | спред=0.577% (eff.min 0.216%) | bid_qty=11547290 | мидΔ=+0.000% | entry=0.00422570 | TP=0.00425498 | SL=0.00421594 | qty=12295 (риск≤12295, ликв≤34641870) | gross=+0.359998 | net=+0.339144
+2026-10-07T01:56:59.690129Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:57:05.055215Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422570 ask=0.00425010 | спред=0.577% (eff.min 0.216%) | bid_qty=11458656 | мидΔ=+0.000% | entry=0.00422570 | TP=0.00425498 | SL=0.00421594 | qty=12295 (риск≤12295, ликв≤34375968) | gross=+0.359998 | net=+0.339144
+2026-10-07T01:57:05.056365Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:57:12.611912Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422570 ask=0.00425010 | спред=0.577% (eff.min 0.216%) | bid_qty=11451501 | мидΔ=+0.000% | entry=0.00422570 | TP=0.00425498 | SL=0.00421594 | qty=12295 (риск≤12295, ликв≤34354503) | gross=+0.359998 | net=+0.339144
+2026-10-07T01:57:12.614799Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:57:16.929528Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00422350 ask=0.00425010 | спред=0.630% (eff.min 0.216%) | bid_qty=14203346 | мидΔ=-0.004% | entry=0.00422350 | TP=0.00425542 | SL=0.00421286 | qty=11278 (риск≤11278, ликв≤42610038) | gross=+0.359994 | net=+0.340869
+2026-10-07T01:57:16.930508Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:57:18.349965Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00421990 ask=0.00425010 | спред=0.716% (eff.min 0.216%) | bid_qty=75457 | мидΔ=-0.030% | entry=0.00421990 | TP=0.00425614 | SL=0.00420782 | qty=9933 (риск≤9934, ликв≤226371) | gross=+0.359972 | net=+0.343133
+2026-10-07T01:57:18.350792Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:57:18.443009Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00421640 ask=0.00425010 | спред=0.799% (eff.min 0.216%) | bid_qty=9963607 | мидΔ=-0.071% | entry=0.00421640 | TP=0.00425684 | SL=0.00420292 | qty=8902 (риск≤8902, ликв≤29890821) | gross=+0.359997 | net=+0.344911
+2026-10-07T01:57:18.443520Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:58:46.659084Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00420590 ask=0.00421510 | спред=0.219% (eff.min 0.216%) | bid_qty=10000000 | мидΔ=-0.004% | entry=0.00420590 | TP=0.00421694 | SL=0.00420222 | qty=32608 (риск≤32609, ликв≤30000000) | gross=+0.359992 | net=+0.305062
+2026-10-07T01:58:46.660020Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T01:58:47.552886Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00420330 ask=0.00421510 | спред=0.281% (eff.min 0.216%) | bid_qty=9998805 | мидΔ=-0.023% | entry=0.00420330 | TP=0.00421746 | SL=0.00419858 | qty=25423 (риск≤25424, ликв≤29996415) | gross=+0.359990 | net=+0.317173
+2026-10-07T01:58:47.554219Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T02:00:16.280309Z  WARN scalping_agents: [pepe_spread] 🚨 (период.) сирота 1000PEPEUSDT (19230) подтверждена дважды — УСЫНОВЛЯЮ с synthetic SL=0.00416545 (2%), риск/ед=0.00008501, тотал=1.6347, таймер 300с закроет
+2026-10-07T02:00:28.334629Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00418560 ask=0.00419470 | спред=0.217% (eff.min 0.216%) | bid_qty=11357414 | мидΔ=-0.011% | entry=0.00418560 | TP=0.00419652 | SL=0.00418196 | qty=32967 (риск≤32967, ликв≤34072242) | gross=+0.360000 | net=+0.304733
+2026-10-07T02:00:29.633384Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00418340 ask=0.00419470 | спред=0.270% (eff.min 0.216%) | bid_qty=15286435 | мидΔ=-0.014% | entry=0.00418340 | TP=0.00419696 | SL=0.00417888 | qty=26548 (риск≤26549, ликв≤45859305) | gross=+0.359991 | net=+0.315495
+2026-10-07T02:00:30.222358Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00418130 ask=0.00419470 | спред=0.320% (eff.min 0.216%) | bid_qty=9245204 | мидΔ=-0.023% | entry=0.00418130 | TP=0.00419738 | SL=0.00417594 | qty=22388 (риск≤22388, ликв≤27735612) | gross=+0.359999 | net=+0.322483
+2026-10-07T02:00:30.808797Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00417900 ask=0.00419470 | спред=0.376% (eff.min 0.216%) | bid_qty=3229892 | мидΔ=-0.020% | entry=0.00417900 | TP=0.00419784 | SL=0.00417272 | qty=19108 (риск≤19108, ликв≤9689676) | gross=+0.359995 | net=+0.327982
+2026-10-07T02:00:44.851033Z  INFO scalping_agents::state::state_manager: 💼 [pepe_spread] ЛОНГ 1000PEPEUSDT | объём=19230 | вход=0.00425046 | тек=0.00417190 | Δ=-1.848% | 28с | SL=0.00416545 | TP=— | PnL=-1.5108 | funding=+0.0000 | fees=0.0000 | R=-0.92
+2026-10-07T02:00:44.851569Z  INFO scalping_agents::state::state_manager: 💰 [pepe_spread] открыто=1 | плавающий PnL=-1.5108 USDT
+2026-10-07T02:00:58.598625Z  INFO scalping_agents::state::state_manager: 💰 ЗАКРЫТИЕ [pepe_spread] 1000PEPEUSDT | ЛОНГ 19230.00000 | вход=0.00425046 выход=0.00416220 | 42с
+2026-10-07T02:00:58.614385Z  INFO scalping_agents: 🔔 [pepe_spread] СДЕЛКА ЗАКРЫТА | результат=loss | PnL=-1.7293 USDT
+2026-10-07T02:01:39.702213Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00414610 ask=0.00415520 | спред=0.219% (eff.min 0.216%) | bid_qty=2562889 | мидΔ=-0.018% | entry=0.00414610 | TP=0.00415702 | SL=0.00414246 | qty=32967 (риск≤32967, ликв≤7688667) | gross=+0.360000 | net=+0.305254
+2026-10-07T02:01:39.703124Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T02:01:40.276609Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00414390 ask=0.00415520 | спред=0.273% (eff.min 0.216%) | bid_qty=2620048 | мидΔ=-0.022% | entry=0.00414390 | TP=0.00415746 | SL=0.00413938 | qty=26548 (риск≤26549, ликв≤7860144) | gross=+0.359991 | net=+0.315914
+2026-10-07T02:01:40.277847Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T02:01:40.373317Z  INFO scalping_agents::strategies::spread_capture: 📊 СБОР СПРЕДА 1000PEPEUSDT | bid=0.00413920 ask=0.00415520 | спред=0.387% (eff.min 0.216%) | bid_qty=905147 | мидΔ=-0.075% | entry=0.00413920 | TP=0.00415840 | SL=0.00413280 | qty=18749 (риск≤18750, ликв≤2715441) | gross=+0.359981 | net=+0.328866
+2026-10-07T02:01:40.374076Z  WARN scalping_agents: [pepe_spread] ⛔ Отклонён Risk Manager
+2026-10-07T02:01:46.469723Z  INFO scalping_agents::strategies::spread_capture: 📊 [1000PEPEUSDT] спред 0.0368% < eff.min 0.2160% (ждём глубокого расширения)
+2026-10-07T02:01:59.058591Z ERROR scalping_agents::websocket: WS read: IO error: Удаленный хост принудительно разорвал существующее подключение. (os error 10054)
+2026-10-07T02:01:59.059270Z ERROR scalping_agents::websocket: 🔌 Ошибка WS #92 (endpoint 0): WS отключён | переподключение через 30 сек

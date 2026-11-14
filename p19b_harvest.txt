@@ -1,0 +1,1876 @@
+﻿=== P19B HARVEST ===
+=== FILE: C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\connection.rs ===
+    1: // WebSocket connection stub
+=== FILE: C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs ===
+    1: use crate::metrics;
+    2: use anyhow::{anyhow, Result};
+    3: use futures_util::{SinkExt, StreamExt};
+    4: use serde_json::Value;
+    5: use std::sync::atomic::{AtomicU64, Ordering};
+    6: use std::sync::Arc;
+    7: use std::time::{Duration, Instant};
+    8: use tokio::sync::{broadcast, Mutex};
+    9: use tokio::task::JoinHandle;
+   10: use tokio::time::{sleep, timeout};
+   11: use tokio_tungstenite::{connect_async, tungstenite::Message};
+   12: 
+   13: // ─────────────────────────────────────────────────────────────────────
+   14: // 🔧 FIX 23.10.2026 — телеметрия REST-свечей (BUG#2 закрыт как not-a-bug):
+   15: // fstream доказанно отдаёт только bookTicker, свечи приходят через
+   16: // REST-поллер (kline_poller.rs → hub.publish). Heartbeat раньше показывал
+   17: // «свечи=0» вечно — ложный сигнал поломки. Теперь поллерские публикации
+   18: // считаются отдельно: WsHealth.rest_klines → «свечи_REST» в heartbeat.
+   19: // Остальной код НЕ изменён.
+   20: // ─────────────────────────────────────────────────────────────────────
+   21: 
+   22: const WS_ENDPOINTS: &[&str] = &[
+   23:     "wss://stream.binance.com:9443",
+   24:     "wss://stream.binance.com:443",
+   25:     "wss://data-stream.binance.vision",
+   26: ];
+   27: 
+   28: const RECONNECT_THRESHOLD_FOR_SWITCH: u32 = 5;
+   29: 
+   30: /// 🔧 ПАТЧ-TIMEOUT (23.10, живой лог): 10с не хватило Bybit testnet —
+   31: /// два handshake timeout подряд на холодном старте. 25с покрывает
+   32: /// медленный тестнет и не влияет на живые сессии.
+   33: const HANDSHAKE_TIMEOUT_SECS: u64 = 25;
+   34: const CLOCK_SKEW_THRESHOLD_MS: u64 = 500;
+   35: const PONG_DEAD_THRESHOLD_SEC: u64 = 60;
+   36: const MARKET_DATA_SILENCE_LOG_SEC: u64 = 60;
+   37: 
+   38: /// 🔧 ПАТЧ-BACKOFF: сессия, прожившая дольше этого порога, считается
+   39: /// успешной — счётчик сбоев сбрасывается и backoff не эскалирует.
+   40: /// Раньше ЛЮБОЙ разрыв (даже после часов жизни) считался фейлом,
+   41: /// и backoff монотонно рос до 30с — слепые окна для exit-проверок.
+   42: const WS_SESSION_OK_SECS: u64 = 60;
+   43: 
+   44: #[derive(Debug, Clone)]
+   45: pub enum WebSocketMessage {
+   46:     Trade(TradeMessage),
+   47:     OrderBook(OrderBookMessage),
+   48:     Kline(KlineMessage),
+   49:     BookTicker(BookTickerMessage),
+   50: }
+   51: 
+   52: #[derive(Debug, Clone)]
+   53: pub struct TradeMessage {
+   54:     pub symbol: String,
+   55:     pub price: f64,
+   56:     pub volume: f64,
+   57:     pub timestamp: i64,
+   58:     pub event_time: i64,
+   59:     pub is_buyer_maker: bool,
+   60: }
+   61: 
+   62: #[derive(Debug, Clone)]
+   63: pub struct OrderBookMessage {
+   64:     pub symbol: String,
+   65:     pub bids: Vec<(f64, f64)>,
+   66:     pub asks: Vec<(f64, f64)>,
+   67: }
+   68: 
+   69: #[derive(Debug, Clone)]
+   70: pub struct KlineMessage {
+   71:     pub symbol: String,
+   72:     pub open: f64,
+   73:     pub high: f64,
+   74:     pub low: f64,
+   75:     pub close: f64,
+   76:     pub volume: f64,
+   77:     /// ✅ Объём агрессивных покупок (taker buys) — нужен для OFI.
+   78:     pub taker_buy_volume: f64,
+   79:     /// ✅ close_time свечи (момент закрытия).
+   80:     pub timestamp: i64,
+   81:     pub is_closed: bool,
+   82:     /// ✅ П3: true = историческая свеча из backfill-пакета поллера.
+   83:     /// Кормит индикаторы стратегий, но игнорируется exit-проверками
+   84:     /// (старые цены не должны срабатывать SL/TP восстановленных позиций).
+   85:     pub is_backfill: bool,
+   86: }
+   87: 
+   88: #[derive(Debug, Clone)]
+   89: pub struct BookTickerMessage {
+   90:     pub symbol: String,
+   91:     pub best_bid: f64,
+   92:     pub best_ask: f64,
+   93:     pub bid_qty: f64,
+   94:     pub ask_qty: f64,
+   95:     /// ✅ К-20: event time из стрима. На futures есть поле E;
+   96:     /// на споте его может не быть — тогда локальное время получения.
+   97:     pub timestamp: i64,
+   98: }
+   99: 
+  100: impl WebSocketMessage {
+  101:     pub fn exchange(&self) -> &str {
+  102:         "binance"
+  103:     }
+  104: }
+  105: 
+  106: #[derive(Default)]
+  107: pub struct WsHealth {
+  108:     pub received: AtomicU64,
+  109:     pub parsed: AtomicU64,
+  110:     pub trades: AtomicU64,
+  111:     pub book_tickers: AtomicU64,
+  112:     pub klines: AtomicU64,
+  113:     /// 🔧 FIX: свечи, опубликованные REST-поллером через hub.publish()
+  114:     /// (для futures — ОСНОВНОЙ поток свечей, WS их не отдаёт).
+  115:     pub rest_klines: AtomicU64,
+  116:     /// ✅ DIAG v3.4.1: публикации при нулевых приёмниках (потеря backfill)
+  117:     pub publish_fails: AtomicU64,
+  118:     pub order_books: AtomicU64,
+  119:     pub reconnects: AtomicU64,
+  120:     pub total_silence_seconds: AtomicU64,
+  121:     pub latency_sum_ms: AtomicU64,
+  122:     pub latency_count: AtomicU64,
+  123: }
+  124: 
+  125: impl WsHealth {
+  126:     pub fn new() -> Arc<Self> {
+  127:         Arc::new(Self::default())
+  128:     }
+  129: 
+  130:     pub fn parse_rate(&self) -> f64 {
+  131:         let r = self.received.load(Ordering::Relaxed);
+  132:         if r == 0 {
+  133:             return 0.0;
+  134:         }
+  135:         self.parsed.load(Ordering::Relaxed) as f64 / r as f64
+  136:     }
+  137: 
+  138:     pub fn avg_latency_ms(&self) -> f64 {
+  139:         let c = self.latency_count.load(Ordering::Relaxed);
+  140:         if c == 0 {
+  141:             return 0.0;
+  142:         }
+  143:         self.latency_sum_ms.load(Ordering::Relaxed) as f64 / c as f64
+  144:     }
+  145: }
+  146: 
+  147: pub struct WebSocketHub {
+  148:     tx: broadcast::Sender<WebSocketMessage>,
+  149:     health: Arc<WsHealth>,
+  150:     /// ✅ v3.5: кэш последних REST-свечей (страховка прогрева).
+  151:     /// Broadcast теряет сообщения, опубликованные при нулевых приёмниках
+  152:     /// (старт бота задержан reconciliation-ретраями / рестарт супервизора).
+  153:     /// Кэш строго возрастает по timestamp — дубли не проходят.
+  154:     kline_cache: Arc<std::sync::Mutex<std::collections::VecDeque<KlineMessage>>>,
+  155:     _handle: JoinHandle<()>,
+  156: }
+  157: 
+  158: /// ✅ v3.5: глубина кэша свечей хаба (250 backfill × 2 + запас живых свечей)
+  159: const KLINE_CACHE_CAP: usize = 600;
+  160: 
+  161: impl WebSocketHub {
+  162:     pub async fn new(ws_base_url: &str, symbol: &str) -> Result<Arc<Self>> {
+  163:         let sym = symbol.to_lowercase();
+  164: 
+  165:         let is_futures = ws_base_url.contains("fstream")
+  166:             || ws_base_url.contains("futures")
+  167:             || ws_base_url.contains("binancefuture");
+  168: 
+  169:         // ✅ 3г: fstream из нашего региона отдаёт только bookTicker (пробник, 2 сети).
+  170:         // Свечи — через REST-поллер.
+  171:         let streams = if is_futures {
+  172:             format!("{s}@bookTicker", s = sym)
+  173:         } else {
+  174:             format!(
+  175:                 "{s}@aggTrade/{s}@bookTicker/{s}@depth20@100ms/{s}@kline_1m",
+  176:                 s = sym
+  177:             )
+  178:         };
+  179: 
+  180:         tracing::info!(
+  181:             "📡 WebSocket Hub | {} | {}",
+  182:             if is_futures { "FUTURES" } else { "SPOT" },
+  183:             streams
+  184:         );
+  185: 
+  186:         // v3.7b FIX: Bybit v5 WS does NOT support Binance combined-stream URLs.
+  187:         // ws_base_url already holds the correct path (/v5/public/linear);
+  188:         // subscription is sent as JSON-op right after connect (see connect_and_process).
+  189:         
+  190:         let is_bybit = ws_base_url.to_lowercase().contains("bybit");
+  191:         let is_okx = ws_base_url.to_lowercase().contains("okx");
+  192:         let mut endpoints: Vec<String> = if is_bybit || is_okx {
+  193:             vec![ws_base_url.trim_end_matches('/').to_string()]
+  194:         } else {
+  195:             vec![format!(
+  196:                 "{}/stream?streams={}",
+  197:                 ws_base_url.trim_end_matches('/'),
+  198:                 streams
+  199:             )]
+  200:         };
+  201: 
+  202:         // 🔧 ПАТЧ-FALLBACK (23.10, живой лог): Binance-fallback'и имеют смысл
+  203:         // ТОЛЬКО для Binance-первичных хабов. Для Bybit-символов (XAUUSDT и
+  204:         // т.п.) такого символа на Binance НЕТ — «backup» подключится (HTTP 101,
+  205:         // PONG ходит), но данных не отдаст: WS выглядит живым, рынок молчит —
+  206:         // маскировка реальной проблемы вместо честного переподключения.
+  207:         if !is_futures && !ws_base_url.contains("bybit") {
+  208:             for &ep in WS_ENDPOINTS {
+  209:                 let full = format!("{}/stream?streams={}", ep.trim_end_matches('/'), streams);
+  210:                 if !endpoints.contains(&full) {
+  211:                     endpoints.push(full);
+  212:                 }
+  213:             }
+  214:         }
+  215: 
+  216:         let (tx, _rx) = broadcast::channel::<WebSocketMessage>(5000);
+  217:         let tx_clone = tx.clone();
+  218: 
+  219:         // v3.7b: Bybit JSON-op subscription, sent after EVERY (re)connect.
+  220:         // kline/orderbook intentionally NOT subscribed: 1m candles in the shared
+  221:         // stream could confuse strategies expecting 4h candles from the REST
+  222:         // poller; orderbook needs local snapshot+delta merge (v3.8). Live price
+  223:         // for DCA comes from tickers (best bid/ask).
+  224:         let subscribe_msg: Option<String> = if is_bybit {
+  225:             Some(format!(
+  226:                 "{{\"op\":\"subscribe\",\"args\":[\"tickers.{s}\",\"publicTrade.{s}\"]}}",
+  227:                 s = symbol.to_uppercase()
+  228:             ))
+  229:         } else if is_okx {
+  230:             let inst = okx_inst_id(&symbol);
+  231:             Some(format!(
+  232:                 "{{\"op\":\"subscribe\",\"args\":[{{\"channel\":\"tickers\",\"instId\":\"{i}\"}},{{\"channel\":\"trades\",\"instId\":\"{i}\"}}]}}",
+  233:                 i = inst
+  234:             ))
+  235:         } else {
+  236:             None
+  237:         };
+  238:         let health = WsHealth::new();
+  239:         let health_for_task = health.clone();
+  240:         let kline_cache = Arc::new(std::sync::Mutex::new(
+  241:             std::collections::VecDeque::with_capacity(KLINE_CACHE_CAP + 40),
+  242:         ));
+  243: 
+  244:         for (i, ep) in endpoints.iter().enumerate() {
+  245:             tracing::info!("   [{}] {}", i, ep);
+  246:         }
+  247: 
+  248:         spawn_daily_report(health.clone());
+  249: 
+  250:         let handle = tokio::spawn(async move {
+  251:             let mut endpoint_idx: usize = 0;
+  252:             let mut backoff_sec = 1u64;
+  253:             let mut consecutive_failures: u32 = 0;
+  254:             let mut last_switch = Instant::now();
+  255: 
+  256:             loop {
+  257:                 let url = &endpoints[endpoint_idx];
+  258: 
+  259:                 // ============================================================
+  260:                 // 🔧 ПАТЧ-BACKOFF: connect_and_process возвращает время жизни
+  261:                 // сессии. Долгая (≥ WS_SESSION_OK_SECS) — успех: backoff в 1с,
+  262:                 // счётчик сбоев в ноль → после RST переподключение мгновенное.
+  263:                 // Короткая — считается сбоем (тот же механизм, что и Err,
+  264:                 // включая переключение endpoint'ов для спота).
+  265:                 // ============================================================
+  266:                 match connect_and_process(
+  267:                     url,
+  268:                     subscribe_msg.as_deref(),
+  269:                     tx_clone.clone(),
+  270:                     health_for_task.clone(),
+  271:                 )
+  272:                 .await
+  273:                 {
+  274:                     Ok(lifetime_secs) => {
+  275:                         if lifetime_secs >= WS_SESSION_OK_SECS {
+  276:                             backoff_sec = 1;
+  277:                             consecutive_failures = 0;
+  278:                             last_switch = Instant::now();
+  279:                             tracing::info!(
+  280:                                 "🔌 WS-сессия завершена чисто (прожила {}с) — backoff сброшен",
+  281:                                 lifetime_secs
+  282:                             );
+  283:                         } else {
+  284:                             health_for_task.reconnects.fetch_add(1, Ordering::Relaxed);
+  285:                             metrics::WS_RECONNECTS.with_label_values(&["global"]).inc();
+  286:                             consecutive_failures += 1;
+  287: 
+  288:                             // 🔇 V3.2 шум-гейт: первые 3 сбоя логируем каждый,
+  289:                             // дальше каждый 10-й (тестнет может рвать сессии
+  290:                             // каждые ~60с — иначе лог разбухает).
+  291:                             if consecutive_failures <= 3 || consecutive_failures % 10 == 0 {
+  292:                                 tracing::warn!(
+  293:                                     "🔌 WS-сессия коротка: {}с (сбой {}/{}) | переподключение через {} сек",
+  294:                                     lifetime_secs,
+  295:                                     consecutive_failures,
+  296:                                     RECONNECT_THRESHOLD_FOR_SWITCH,
+  297:                                     backoff_sec
+  298:                                 );
+  299:                             }
+  300: 
+  301:                             let should_switch =
+  302:                                 consecutive_failures >= RECONNECT_THRESHOLD_FOR_SWITCH
+  303:                                     && endpoints.len() > 1
+  304:                                     && last_switch.elapsed() > Duration::from_secs(60);
+  305: 
+  306:                             if should_switch {
+  307:                                 endpoint_idx = (endpoint_idx + 1) % endpoints.len();
+  308:                                 consecutive_failures = 0;
+  309:                                 last_switch = Instant::now();
+  310:                                 backoff_sec = 1;
+  311:                                 tracing::warn!(
+  312:                                     "🔀 Переключение на backup endpoint [{}]: {}",
+  313:                                     endpoint_idx,
+  314:                                     endpoints[endpoint_idx]
+  315:                                 );
+  316:                             } else {
+  317:                                 sleep(Duration::from_secs(backoff_sec)).await;
+  318:                                 backoff_sec = (backoff_sec * 2).min(30);
+  319:                             }
+  320:                         }
+  321:                     }
+  322:                     Err(e) => {
+  323:                         health_for_task.reconnects.fetch_add(1, Ordering::Relaxed);
+  324:                         metrics::WS_RECONNECTS.with_label_values(&["global"]).inc();
+  325:                         consecutive_failures += 1;
+  326: 
+  327:                         // 🔇 V3.2 шум-гейт: первые 3 фейла логируем каждый,
+  328:                         // дальше каждый 10-й. Bybit testnet может отдавать
+  329:                         // 504 часами — иначе 2 строки мусора в минуту.
+  330:                         if consecutive_failures <= 3 || consecutive_failures % 10 == 0 {
+  331:                             tracing::error!(
+  332:                                 "🔌 Ошибка WS #{} (endpoint {}): {} | переподключение через {} сек",
+  333:                                 consecutive_failures,
+  334:                                 endpoint_idx,
+  335:                                 e,
+  336:                                 backoff_sec
+  337:                             );
+  338:                         }
+  339: 
+  340:                         let should_switch = consecutive_failures >= RECONNECT_THRESHOLD_FOR_SWITCH
+  341:                             && endpoints.len() > 1
+  342:                             && last_switch.elapsed() > Duration::from_secs(60);
+  343: 
+  344:                         if should_switch {
+  345:                             endpoint_idx = (endpoint_idx + 1) % endpoints.len();
+  346:                             consecutive_failures = 0;
+  347:                             last_switch = Instant::now();
+  348:                             backoff_sec = 1;
+  349:                             tracing::warn!(
+  350:                                 "🔀 Переключение на backup endpoint [{}]: {}",
+  351:                                 endpoint_idx,
+  352:                                 endpoints[endpoint_idx]
+  353:                             );
+  354:                         } else {
+  355:                             sleep(Duration::from_secs(backoff_sec)).await;
+  356:                             backoff_sec = (backoff_sec * 2).min(30);
+  357:                         }
+  358:                     }
+  359:                 }
+  360:             }
+  361:         });
+  362: 
+  363:         Ok(Arc::new(Self {
+  364:             tx,
+  365:             health,
+  366:             kline_cache,
+  367:             _handle: handle,
+  368:         }))
+  369:     }
+  370: 
+  371:     pub fn subscribe(&self) -> broadcast::Receiver<WebSocketMessage> {
+  372:         self.tx.subscribe()
+  373:     }
+  374: 
+  375:     /// ✅ v3.5: последние REST-свечи из кэша хаба — для гарантированного
+  376:     /// прогрева стратегии минуя broadcast (см. main.rs, блок v3.5).
+  377:     pub fn recent_klines(&self) -> Vec<KlineMessage> {
+  378:         self.kline_cache
+  379:             .lock()
+  380:             .unwrap()
+  381:             .iter()
+  382:             .cloned()
+  383:             .collect()
+  384:     }
+  385: 
+  386:     pub fn health(&self) -> Arc<WsHealth> {
+  387:         self.health.clone()
+  388:     }
+  389: 
+  390:     /// ✅ 3г: инъекция сообщения в канал хаба (для REST-поллера свечей)
+  391:     pub fn publish(&self, msg: WebSocketMessage) {
+  392:         // 🔧 FIX: REST-свечи считаем отдельно от WS-klines — иначе heartbeat
+  393:         // для futures вечно показывает «свечи=0» (fstream kline не отдаёт).
+  394:         if let WebSocketMessage::Kline(k) = &msg {
+  395:             self.health.rest_klines.fetch_add(1, Ordering::Relaxed);
+  396:             // ✅ v3.5: параллельно кладём свечу в кэш хаба. Если приёмников
+  397:             // в момент публикации нет, send() ниже потеряет сообщение —
+  398:             // кэш позволит добрать историю при старте цикла бота.
+  399:             if let Ok(mut cache) = self.kline_cache.lock() {
+  400:                 if cache.back().map_or(true, |last| k.timestamp > last.timestamp) {
+  401:                     cache.push_back(k.clone());
+  402:                     while cache.len() > KLINE_CACHE_CAP {
+  403:                         cache.pop_front();
+  404:                     }
+  405:                 }
+  406:             }
+  407:         }
+  408:         // ✅ DIAG v3.4.1: раньше ошибка send() глоталась — теперь видно,
+  409:         // если свечи публикуются при нулевых приёмниках (потеря backfill).
+  410:         if let Err(e) = self.tx.send(msg) {
+  411:             let n = self.health.publish_fails.fetch_add(1, Ordering::Relaxed);
+  412:             if n < 3 || n % 100 == 0 {
+  413:                 tracing::warn!(
+  414:                     "hub.publish: НЕТ приёмников — сообщение потеряно (потеря #{})",
+  415:                     n + 1
+  416:                 );
+  417:                 let _ = e; // RecvError без полезной нагрузки
+  418:             }
+  419:         }
+  420:     }
+  421: }
+  422: 
+  423: /// Возвращает Ok(секунд жизни сессии). Причина разрыва уже залогирована
+  424: /// внутри (RST / Close / PONG-dead) — супервизору важна только длительность.
+  425: async fn connect_and_process(
+  426:     url: &str,
+  427:     subscribe_msg: Option<&str>,
+  428:     tx: broadcast::Sender<WebSocketMessage>,
+  429:     health: Arc<WsHealth>,
+  430: ) -> Result<u64> {
+  431:     tracing::info!("Подключаюсь к {}", url);
+  432: 
+  433:     let connect_result = timeout(
+  434:         Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+  435:         connect_async(url),
+  436:     )
+  437:     .await;
+  438:     let ws = match connect_result {
+  439:         Ok(Ok((ws, response))) => {
+  440:             tracing::info!("✅ WS ПОДКЛЮЧЁН | HTTP {}", response.status());
+  441:             ws
+  442:         }
+  443:         Ok(Err(e)) => return Err(anyhow!("WS handshake failed: {}", e)),
+  444:         Err(_) => {
+  445:             return Err(anyhow!(
+  446:                 "WS handshake timeout ({}s)",
+  447:                 HANDSHAKE_TIMEOUT_SECS
+  448:             ))
+  449:         }
+  450:     };
+  451: 
+  452:     // 🔧 ПАТЧ-BACKOFF: в scope ФУНКЦИИ (не match-arm) — нужен в точке возврата
+  453:     let started = Instant::now();
+  454: 
+  455:     let (write, mut read) = ws.split();
+  456:     let write = Arc::new(Mutex::new(write));
+  457: 
+  458:     let is_okx = subscribe_msg.map(|m| m.contains("instId")).unwrap_or(false);    let is_bybit = !is_okx && subscribe_msg.is_some();
+  459:     // v3.7b: cache of last bid/ask for Bybit tickers. Bybit deltas carry only
+  460:     // changed fields - without this cache BookTicker would be choppy.
+  461:     let mut bt_cache = BybitTickerCache::default();
+  462: 
+  463:     if let Some(sub) = subscribe_msg {
+  464:         let mut guard = write.lock().await;
+  465:         if let Err(e) = guard.send(Message::Text(sub.to_string())).await {
+  466:             return Err(anyhow!("Bybit subscribe send failed: {}", e));
+  467:         }
+  468:         tracing::info!("[bybit-ws] subscription sent: {}", sub);
+  469:     }
+  470: 
+  471:     let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+  472:     ping_interval.tick().await;
+  473: 
+  474:     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+  475:     heartbeat.tick().await;
+  476: 
+  477:     let mut last_msg_at = Instant::now();
+  478:     let mut last_pong_at = Instant::now();
+  479: 
+  480:     loop {
+  481:         tokio::select! {
+  482:             biased;
+  483: 
+  484:             msg = read.next() => {
+  485:                 match msg {
+  486:                     Some(Ok(Message::Ping(payload))) => {
+  487:                         let mut guard = write.lock().await;
+  488:                         if let Err(e) = guard.send(Message::Pong(payload)).await {
+  489:                             tracing::error!("Pong send: {}", e);
+  490:                             break;
+  491:                         }
+  492:                     }
+  493:                     Some(Ok(Message::Pong(_))) => {
+  494:                         last_pong_at = Instant::now();
+  495:                     }
+  496:                     Some(Ok(Message::Text(text))) => {
+  497:                         health.received.fetch_add(1, Ordering::Relaxed);
+  498:                         metrics::WS_MESSAGES_RECEIVED.with_label_values(&["global"]).inc();
+  499:                         last_msg_at = Instant::now();
+  500: 
+  501:                         // v3.7b: Bybit application pong counts as liveness.
+  502:                         if is_bybit && (text.contains("\"op\":\"pong\"") || text.contains("\"op\": \"pong\"")) {
+  503:                             last_pong_at = Instant::now();
+  504:                             continue;
+  505:                         }
+  506: 
+  507:                         let parsed_msg = if is_okx {
+  508:                             if text.trim().eq_ignore_ascii_case("pong") {
+  509:                                 last_pong_at = Instant::now();
+  510:                                 continue;
+  511:                             }
+  512:                             parse_okx_message(&text)
+  513:                         } else if is_bybit {
+  514:                             parse_bybit_message(&text, &mut bt_cache)
+  515:                         } else {
+  516:                             parse_message(&text)
+  517:                         };
+  518:                         if let Some(m) = parsed_msg {
+  519:                             health.parsed.fetch_add(1, Ordering::Relaxed);
+  520:                             metrics::WS_MESSAGES_PARSED.with_label_values(&["global"]).inc();
+  521: 
+  522:                             match &m {
+  523:                                 WebSocketMessage::Trade(_) => { health.trades.fetch_add(1, Ordering::Relaxed); }
+  524:                                 WebSocketMessage::BookTicker(_) => { health.book_tickers.fetch_add(1, Ordering::Relaxed); }
+  525:                                 WebSocketMessage::Kline(_) => { health.klines.fetch_add(1, Ordering::Relaxed); }
+  526:                                 WebSocketMessage::OrderBook(_) => { health.order_books.fetch_add(1, Ordering::Relaxed); }
+  527:                             }
+  528: 
+  529:                             if let WebSocketMessage::Trade(ref t) = m {
+  530:                                 let local_ts_ms = chrono::Utc::now().timestamp_millis();
+  531:                                 let raw_latency = (local_ts_ms - t.event_time).max(0) as u64;
+  532:                                 if raw_latency < CLOCK_SKEW_THRESHOLD_MS {
+  533:                                     health.latency_sum_ms.fetch_add(raw_latency, Ordering::Relaxed);
+  534:                                     health.latency_count.fetch_add(1, Ordering::Relaxed);
+  535:                                     metrics::WS_LATENCY_MS
+  536:                                         .with_label_values(&["binance"])
+  537:                                         .observe(raw_latency as f64);
+  538:                                 }
+  539:                             }
+  540: 
+  541:                             let _ = tx.send(m);
+  542:                         }
+  543:                     }
+  544:                     Some(Ok(Message::Close(frame))) => {
+  545:                         tracing::warn!("Сервер закрыл: {:?}", frame);
+  546:                         break;
+  547:                     }
+  548:                     Some(Err(e)) => {
+  549:                         tracing::error!("WS read: {}", e);
+  550:                         break;
+  551:                     }
+  552:                     None => {
+  553:                         tracing::warn!("WS поток закончился");
+  554:                         break;
+  555:                     }
+  556:                     _ => {}
+  557:                 }
+  558:             }
+  559: 
+  560:             _ = ping_interval.tick() => {
+  561:                 let mut guard = write.lock().await;
+  562:                 // v3.7b: Bybit requires APPLICATION-level JSON ping (op:ping)
+  563:                 // every 20s; protocol RFC-ping stays for Binance.
+  564:                 let ping_frame = if is_okx {
+  565:                     Message::Text("ping".to_string())
+  566:                 } else if is_bybit {
+  567:                     Message::Text("{\"op\":\"ping\"}".to_string())
+  568:                 } else {
+  569:                     Message::Ping(vec![])
+  570:                 };
+  571:                 if let Err(e) = guard.send(ping_frame).await {
+  572:                     tracing::error!("Ping send: {}", e);
+  573:                     break;
+  574:                 }
+  575:             }
+  576: 
+  577:             _ = heartbeat.tick() => {
+  578:                 let rate = health.parse_rate();
+  579:                 let silence_sec = last_msg_at.elapsed().as_secs();
+  580:                 let pong_age_sec = last_pong_at.elapsed().as_secs();
+  581: 
+  582:                 metrics::WS_PARSE_RATE.with_label_values(&["global"]).set(rate);
+  583:                 metrics::WS_SILENCE_SECONDS.with_label_values(&["global"]).set(silence_sec as f64);
+  584: 
+  585:                 if pong_age_sec > PONG_DEAD_THRESHOLD_SEC {
+  586:                     health.total_silence_seconds.fetch_add(pong_age_sec, Ordering::Relaxed);
+  587:                     metrics::WS_TOTAL_SILENCE_SECONDS
+  588:                         .with_label_values(&["global"])
+  589:                         .inc_by(pong_age_sec as f64);
+  590:                     tracing::error!(
+  591:                         "💓 PONG не приходил {} сек — соединение мертво, переподключение",
+  592:                         pong_age_sec
+  593:                     );
+  594:                     break;
+  595:                 }
+  596: 
+  597:                 if silence_sec > MARKET_DATA_SILENCE_LOG_SEC {
+  598:                     tracing::info!(
+  599:                         "💓 Тишина в market data {} сек, но PONG был {} сек назад — соединение живо",
+  600:                         silence_sec,
+  601:                         pong_age_sec
+  602:                     );
+  603:                 }
+  604: 
+  605:                 // 🔧 FIX: добавлен счётчик свечи_REST — публикации REST-поллера.
+  606:                 // Для futures это ОСНОВНОЙ поток свечей; «свечи=0» при растущем
+  607:                 // свечи_REST — норма (WS kline не отдаётся), а не поломка.
+  608:                 tracing::info!(
+  609:                     "💓 heartbeat: получено={} разобрано={} ({:.1}%) | трейды={} книги={} свечи={} свечи_REST={} | тишина={}с | PONG_age={}с | latency≈{:.0}мс",
+  610:                     health.received.load(Ordering::Relaxed),
+  611:                     health.parsed.load(Ordering::Relaxed),
+  612:                     rate * 100.0,
+  613:                     health.trades.load(Ordering::Relaxed),
+  614:                     health.book_tickers.load(Ordering::Relaxed),
+  615:                     health.klines.load(Ordering::Relaxed),
+  616:                     health.rest_klines.load(Ordering::Relaxed),
+  617:                     silence_sec,
+  618:                     pong_age_sec,
+  619:                     health.avg_latency_ms()
+  620:                 );
+  621: 
+  622:                 if health.received.load(Ordering::Relaxed) > 100 && rate < 0.95 {
+  623:                     tracing::warn!("⚠️ Низкий parse rate: {:.1}%", rate * 100.0);
+  624:                 }
+  625:             }
+  626:         }
+  627:     }
+  628: 
+  629:     Ok(started.elapsed().as_secs())
+  630: }
+  631: 
+  632: fn spawn_daily_report(health: Arc<WsHealth>) {
+  633:     tokio::spawn(async move {
+  634:         let mut interval = tokio::time::interval(Duration::from_secs(24 * 3600));
+  635:         interval.tick().await;
+  636:         loop {
+  637:             interval.tick().await;
+  638: 
+  639:             let received = health.received.load(Ordering::Relaxed);
+  640:             let parsed = health.parsed.load(Ordering::Relaxed);
+  641:             let rate = if received > 0 { parsed as f64 / received as f64 * 100.0 } else { 0.0 };
+  642:             let reconnects = health.reconnects.load(Ordering::Relaxed);
+  643:             let silence = health.total_silence_seconds.load(Ordering::Relaxed);
+  644:             let latency = health.avg_latency_ms();
+  645:             let rest_klines = health.rest_klines.load(Ordering::Relaxed);
+  646: 
+  647:             tracing::info!("╔═══════════════════════════════════════════════╗");
+  648:             tracing::info!("║   📊 СУТОЧНЫЙ ОТЧЁТ WebSocket                 ║");
+  649:             tracing::info!("╠═══════════════════════════════════════════════╣");
+  650:             tracing::info!("║  Получено сообщений: {:>15}          ║", received);
+  651:             tracing::info!("║  Разобрано:          {:>15} ({:.2}%) ║", parsed, rate);
+  652:             tracing::info!("║  Средняя латентность:{:>13.0} мс       ║", latency);
+  653:             tracing::info!("║  Переподключений:    {:>15}          ║", reconnects);
+  654:             tracing::info!("║  Общее время тишины: {:>13} с          ║", silence);
+  655:             tracing::info!("║  Свечей от REST:     {:>15}          ║", rest_klines);
+  656:             tracing::info!("╚═══════════════════════════════════════════════╝");
+  657: 
+  658:             health.received.store(0, Ordering::Relaxed);
+  659:             health.parsed.store(0, Ordering::Relaxed);
+  660:             health.reconnects.store(0, Ordering::Relaxed);
+  661:             health.total_silence_seconds.store(0, Ordering::Relaxed);
+  662:             health.latency_sum_ms.store(0, Ordering::Relaxed);
+  663:             health.latency_count.store(0, Ordering::Relaxed);
+  664:             health.rest_klines.store(0, Ordering::Relaxed);
+  665:         }
+  666:     });
+  667: }
+  668: 
+  669: // v3.7b: cache of last best bid/ask for converting Bybit tickers
+  670: // (snapshot + delta) into full BookTickerMessage values.
+  671: #[derive(Default, Clone, Copy)]
+  672: struct BybitTickerCache {
+  673:     bid: f64,
+  674:     ask: f64,
+  675:     bid_qty: f64,
+  676:     ask_qty: f64,
+  677: }
+  678: 
+  679: // v3.7b: Bybit v5 envelope parser {"topic":...,"type":...,"ts":...,"data":...}.
+  680: // Handles exactly what we subscribe to: tickers.XAUUSDT (best bid/ask) and
+  681: // publicTrade.XAUUSDT (trade tape). Everything else is silently ignored.
+  682: fn parse_bybit_message(
+  683:     text: &str,
+  684:     bt_cache: &mut BybitTickerCache,
+  685: ) -> Option<WebSocketMessage> {
+  686:     let root: Value = serde_json::from_str(text).ok()?;
+  687:     let topic = root.get("topic")?.as_str()?.to_string();
+  688:     let root_ts = root.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+  689:     let data = root.get("data")?.clone();
+  690: 
+  691:     if topic.starts_with("tickers.") {
+  692:         // data is an object; delta carries only the changed fields.
+  693:         let get_f = |key: &str| -> Option<f64> {
+  694:             data.get(key)
+  695:                 .and_then(|v| v.as_str())
+  696:                 .filter(|s| !s.is_empty())
+  697:                 .and_then(|s| s.parse::<f64>().ok())
+  698:         };
+  699:         if let Some(v) = get_f("bid1Price") {
+  700:             bt_cache.bid = v;
+  701:         }
+  702:         if let Some(v) = get_f("ask1Price") {
+  703:             bt_cache.ask = v;
+  704:         }
+  705:         if let Some(v) = get_f("bid1Size") {
+  706:             bt_cache.bid_qty = v;
+  707:         }
+  708:         if let Some(v) = get_f("ask1Size") {
+  709:             bt_cache.ask_qty = v;
+  710:         }
+  711:         if bt_cache.bid <= 0.0 || bt_cache.ask <= 0.0 {
+  712:             return None; // one side still unknown (wait for full snapshot)
+  713:         }
+  714:         let mut timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+  715:         if timestamp <= 0 {
+  716:             timestamp = root_ts;
+  717:         }
+  718:         if timestamp <= 0 {
+  719:             timestamp = chrono::Utc::now().timestamp_millis();
+  720:         }
+  721:         return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+  722:             symbol: data
+  723:                 .get("symbol")
+  724:                 .and_then(|v| v.as_str())
+  725:                 .unwrap_or("UNKNOWN")
+  726:                 .to_string(),
+  727:             best_bid: bt_cache.bid,
+  728:             best_ask: bt_cache.ask,
+  729:             bid_qty: bt_cache.bid_qty,
+  730:             ask_qty: bt_cache.ask_qty,
+  731:             timestamp,
+  732:         }));
+  733:     }
+  734: 
+  735:     if topic.starts_with("publicTrade.") {
+  736:         // data is an array: [{"T":ms,"s":"XAUUSDT","S":"Buy|Sell","v":..,"p":..}]
+  737:         let arr = data.as_array()?;
+  738:         let t = arr.last()?; // most recent trade in the batch
+  739:         let price = t.get("p")?.as_str()?.parse::<f64>().ok()?;
+  740:         let volume = t.get("v")?.as_str()?.parse::<f64>().ok()?;
+  741:         let symbol = t.get("s")?.as_str()?.to_string();
+  742:         let mut timestamp = t.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
+  743:         if timestamp <= 0 {
+  744:             timestamp = root_ts;
+  745:         }
+  746:         let event_time = if root_ts > 0 { root_ts } else { timestamp };
+  747:         // Bybit S="Buy" means aggressive buyer (taker buy) -> buyer is NOT maker.
+  748:         let is_buyer_maker = t.get("S").and_then(|v| v.as_str()) == Some("Sell");
+  749:         return Some(WebSocketMessage::Trade(TradeMessage {
+  750:             symbol,
+  751:             price,
+  752:             volume,
+  753:             timestamp,
+  754:             event_time,
+  755:             is_buyer_maker,
+  756:         }));
+  757:     }
+  758: 
+  759:     None
+  760: }
+  761: 
+  762: fn parse_message(text: &str) -> Option<WebSocketMessage> {
+  763:     let root: Value = serde_json::from_str(text).ok()?;
+  764: 
+  765:     let (stream, data) = if let Some(s) = root.get("stream").and_then(|s| s.as_str()) {
+  766:         (s.to_string(), root.get("data")?.clone())
+  767:     } else {
+  768:         (String::new(), root.clone())
+  769:     };
+  770: 
+  771:     if stream.contains("@aggTrade") {
+  772:         let symbol = data.get("s")?.as_str()?.to_string();
+  773:         let price = data.get("p")?.as_str()?.parse::<f64>().ok()?;
+  774:         let volume = data.get("q")?.as_str()?.parse::<f64>().ok()?;
+  775:         let timestamp = data.get("T")?.as_i64().unwrap_or(0);
+  776:         let event_time = data.get("E").and_then(|v| v.as_i64()).unwrap_or(timestamp);
+  777:         let is_buyer_maker = data.get("m").and_then(|m| m.as_bool()).unwrap_or(false);
+  778:         return Some(WebSocketMessage::Trade(TradeMessage {
+  779:             symbol, price, volume, timestamp, event_time, is_buyer_maker,
+  780:         }));
+  781:     }
+  782: 
+  783:     if stream.contains("@bookTicker") {
+  784:         let symbol = data.get("s")?.as_str()?.to_string();
+  785:         let best_bid = data.get("b")?.as_str()?.parse::<f64>().ok()?;
+  786:         let best_ask = data.get("a")?.as_str()?.parse::<f64>().ok()?;
+  787:         let bid_qty = data.get("B").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+  788:         let ask_qty = data.get("A").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+  789:         let timestamp = data
+  790:             .get("E")
+  791:             .and_then(|v| v.as_i64())
+  792:             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+  793:         return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+  794:             symbol, best_bid, best_ask, bid_qty, ask_qty, timestamp,
+  795:         }));
+  796:     }
+  797: 
+  798:     if stream.contains("@depth") {
+  799:         let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+  800:         let bids = parse_levels(data.get("bids")?)?;
+  801:         let asks = parse_levels(data.get("asks")?)?;
+  802:         return Some(WebSocketMessage::OrderBook(OrderBookMessage { symbol, bids, asks }));
+  803:     }
+  804: 
+  805:     if stream.contains("@kline") {
+  806:         let k = data.get("k")?;
+  807:         let symbol = k.get("s")?.as_str()?.to_string();
+  808:         let open = k.get("o")?.as_str()?.parse::<f64>().ok()?;
+  809:         let high = k.get("h")?.as_str()?.parse::<f64>().ok()?;
+  810:         let low = k.get("l")?.as_str()?.parse::<f64>().ok()?;
+  811:         let close = k.get("c")?.as_str()?.parse::<f64>().ok()?;
+  812:         let volume = k.get("v")?.as_str()?.parse::<f64>().ok()?;
+  813:         // ✅ taker buy base asset volume — k.V
+  814:         let taker_buy_volume = k
+  815:             .get("V")
+  816:             .and_then(|v| v.as_str())
+  817:             .and_then(|s| s.parse::<f64>().ok())
+  818:             .unwrap_or(0.0);
+  819:         // ✅ close_time — k.T
+  820:         let timestamp = k.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
+  821:         let is_closed = k.get("x").and_then(|v| v.as_bool()).unwrap_or(false);
+  822:         return Some(WebSocketMessage::Kline(KlineMessage {
+  823:             symbol, open, high, low, close, volume, taker_buy_volume, timestamp, is_closed,
+  824:             is_backfill: false,
+  825:         }));
+  826:     }
+  827: 
+  828:     None
+  829: }
+  830: 
+  831: fn parse_levels(v: &Value) -> Option<Vec<(f64, f64)>> {
+  832:     Some(
+  833:         v.as_array()?
+  834:             .iter()
+  835:             .filter_map(|level| {
+  836:                 let arr = level.as_array()?;
+  837:                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
+  838:                 let qty = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
+  839:                 Some((price, qty))
+  840:             })
+  841:             .collect(),
+  842:     )
+  843: }
+  844: 
+  845: pub struct WebSocketConnection;
+  846: pub async fn create_connection(
+  847:     _ws_base_url: &str,
+  848:     _symbol: &str,
+  849:     _bot_name: &str,
+  850: ) -> Result<(tokio::sync::mpsc::Receiver<WebSocketMessage>, JoinHandle<()>)> {
+  851:     Err(anyhow!("create_connection устарел — используйте WebSocketHub"))
+  852: }
+  853: 
+  854: // v4.0: OKX v5 envelope {"arg":{"channel":...,"instId":...},"data":[...]}.
+  855: // tickers = full snapshot (bidPx/askPx/bidSz/askSz); trades = tape.
+  856: fn parse_okx_message(text: &str) -> Option<WebSocketMessage> {
+  857:     let root: serde_json::Value = serde_json::from_str(text).ok()?;
+  858:     let channel = root.get("arg")?.get("channel")?.as_str()?.to_string();
+  859:     let data = root.get("data")?.clone();
+  860: 
+  861:     if channel == "tickers" {
+  862:         let t = data.as_array()?.first()?;
+  863:         let bid = t.get("bidPx").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok());
+  864:         let ask = t.get("askPx").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok());
+  865:         let (bid, ask) = match (bid, ask) {
+  866:             (Some(b), Some(a)) if b > 0.0 && a > 0.0 => (b, a),
+  867:             _ => return None, // one side absent - wait for next snapshot
+  868:         };
+  869:         let bid_qty = t.get("bidSz").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+  870:         let ask_qty = t.get("askSz").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+  871:         let timestamp = t
+  872:             .get("ts")
+  873:             .and_then(|v| v.as_str())
+  874:             .and_then(|s| s.parse::<i64>().ok())
+  875:             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+  876:         let symbol = okx_symbol_from_inst_id(t.get("instId").and_then(|v| v.as_str()).unwrap_or(""));
+  877:         return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+  878:             symbol,
+  879:             best_bid: bid,
+  880:             best_ask: ask,
+  881:             bid_qty,
+  882:             ask_qty,
+  883:             timestamp,
+  884:         }));
+  885:     }
+  886: 
+  887:     if channel == "trades" {
+  888:         let t = data.as_array()?.last()?;
+  889:         let price = t.get("px").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())?;
+  890:         let volume = t.get("sz").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())?;
+  891:         let ts = t.get("ts").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+  892:         let symbol = okx_symbol_from_inst_id(t.get("instId").and_then(|v| v.as_str()).unwrap_or(""));
+  893:         let is_buyer_maker = t.get("side").and_then(|v| v.as_str()) == Some("sell");
+  894:         return Some(WebSocketMessage::Trade(TradeMessage {
+  895:             symbol,
+  896:             price,
+  897:             volume,
+  898:             timestamp: ts,
+  899:             event_time: ts,
+  900:             is_buyer_maker,
+  901:         }));
+  902:     }
+  903: 
+  904:     None
+  905: }
+  906: 
+  907: // v4.0: "XAU-USDT-SWAP" -> "XAUUSDT" (engine canonical symbol)
+  908: fn okx_symbol_from_inst_id(inst_id: &str) -> String {
+  909:     let s = inst_id.trim().to_uppercase();
+  910:     if let Some(base) = s.strip_suffix("-USDT-SWAP") {
+  911:         format!("{}USDT", base)
+  912:     } else if let Some(base) = s.strip_suffix("-SWAP") {
+  913:         base.to_string()
+  914:     } else {
+  915:         s
+  916:     }
+  917: }
+  918: 
+  919: // v4.0: "XAUUSDT" -> "XAU-USDT-SWAP"
+  920: fn okx_inst_id(symbol: &str) -> String {
+  921:     let s = symbol.trim().to_uppercase();
+  922:     if s.contains('-') {
+  923:         if s.ends_with("-SWAP") { s } else { format!("{}-SWAP", s) }
+  924:     } else if let Some(base) = s.strip_suffix("USDT") {
+  925:         format!("{}-USDT-SWAP", base)
+  926:     } else {
+  927:         s
+  928:     }
+  929: }
+=== FILE: C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\reconnection.rs ===
+    1: // WebSocket reconnection stub
+=== FILE: src\exchange\kline_poller.rs ===
+    1: //! ✅ Фаза 3г: свечи для futures через REST-поллинг.
+    2: //! fstream отдаёт только bookTicker (доказано пробником), REST fapi работает полностью.
+    3: //! ✅ Фаза 6: интервал настраивается per-bot (kline_interval: "1m", "15m"...).
+    4: //! ✅ П3: первый успешный запрос — backfill (limit=250).
+    5: //! 🔧 АНТИ-БАН v2: интервал 10с, бэкофф 10→60с, бан-пауза 120с,
+    6: //! телеметрия возраста REST-тишины.
+    7: //! 🛡️ RESILIENT v3: 3 внутренние попытки с backoff 500мс+1с внутри
+    8: //! одной poll-итерации. Ловит транзиентные TCP-обрывы (os error 10054),
+    9: //! которые testnet Binance выдаёт каждые ~50с. Внешняя pause_secs не
+   10: //! тронута — она для IP-банов и затяжных падений.
+   11: //!
+   12: //! ─────────────────────────────────────────────────────────────────────
+   13: //! 🔧 FIX 23.10.2026 — BUG#1 (gold_dca candles=0 на протяжении 48ч):
+   14: //!   1. Bybit: close_time_ms больше НЕ хардкод «+1 час» — вычисляется
+   15: //!      из интервала (4h → +14_400_000). Раньше незакрытая 4h-свеча
+   16: //!      публиковалась через час как is_closed=true, а её реальное
+   17: //!      закрытие потом терялось (open_time <= last_open_time → skip).
+   18: //!   2. Bybit: resp.text() + детект HTML ДО парсинга JSON. Геоблок-страница
+   19: //!      раньше падала в "error decoding response body" без диагностики —
+   20: //!      поллер молотил впустую и ни разу не публиковал свечу.
+   21: //!   3. Binance-ветка НЕ тронута (работает стабильно).
+   22: //! ─────────────────────────────────────────────────────────────────────
+   23: use crate::websocket::{KlineMessage, WebSocketHub, WebSocketMessage};
+   24: use std::sync::Arc;
+   25: use std::time::Duration;
+   26: 
+   27: /// 🛡️ RESILIENT: сколько попыток внутри одной poll-итерации.
+   28: const INNER_ATTEMPTS: u32 = 3;
+   29: /// 🛡️ RESILIENT: паузы между внутренними попытками (мс).
+   30: const INNER_BACKOFF_MS: &[u64] = &[500, 1000];
+   31: 
+   32: /// 🔧 FIX: пауза при детектированном геоблоке (HTML вместо JSON).
+   33: /// Ретраить бессмысленно — HTML не «пожелтеет» в JSON, пауза длинная.
+   34: const GEOBLOCK_PAUSE_SECS: u64 = 120;
+   35: 
+   36: pub fn spawn(
+   37:     children: &mut tokio::task::JoinSet<()>,
+   38:     hub: Arc<WebSocketHub>,
+   39:     rest_base: String,
+   40:     symbol: String,
+   41:     interval: String,
+   42: ) {
+   43:     children.spawn(async move {
+   44:         let client = reqwest::Client::builder()
+   45:             .timeout(Duration::from_secs(10))
+   46:             .pool_idle_timeout(std::time::Duration::from_secs(20)).tcp_keepalive(std::time::Duration::from_secs(15))/* P19-POOL */.build()
+   47:             .unwrap_or_default();
+   48:         let base = rest_base.trim_end_matches('/').to_string();
+   49:         let mut last_open_time: i64 = 0;
+   50:         let mut backfilled = false; // ✅ П3: до первого успешного ответа — широкий запрос
+   51:         let mut poll = tokio::time::interval(Duration::from_secs(10));
+   52:         poll.tick().await; // первый тик мгновенный — пропускаем
+   53: 
+   54:         // 🔧 АНТИ-БАН v2: динамическая пауза
+   55:         let mut pause_secs: u64 = 0;
+   56:         let mut consec_fails: u64 = 0;
+   57:         // 🔧 ТЕЛЕМЕТРИЯ: момент последнего успешного REST (0 = ещё не было)
+   58:         let mut last_ok_ms: i64 = 0;
+   59: 
+   60:         loop {
+   61:             poll.tick().await;
+   62: 
+   63:             // 🔧 АНТИ-БАН: пауза после бана/серии фейлов
+   64:             if pause_secs > 0 {
+   65:                 tokio::time::sleep(Duration::from_secs(pause_secs)).await;
+   66:             }
+   67: 
+   68:             // ✅ B2: поллер — non-critical: при перегрузке пропускаем тик
+   69:             if crate::utils::rate_limiter::LIMITER.acquire(false).await
+   70:                 == crate::utils::rate_limiter::Acquire::Throttle
+   71:             {
+   72:                 continue;
+   73:             }
+   74: 
+   75:             let limit = if backfilled { 2 } else { 250 };
+   76:             let url = format!(
+   77:                 "{}/fapi/v1/klines?symbol={}&interval={}&limit={}",
+   78:                 base,
+   79:                 symbol.to_uppercase(),
+   80:                 interval,
+   81:                 limit
+   82:             );
+   83: 
+   84:             // 🛡️ RESILIENT: 3 попытки с backoff 500мс+1с внутри одной
+   85:             // poll-итерации. Ловит транзиентные TCP-обрывы, которые testnet
+   86:             // выдаёт каждые ~50с (os error 10054). После 3 провалов —
+   87:             // делегируем во внешнюю pause_secs логику (IP-бан / затяжной сбой).
+   88:             let v_opt: Option<serde_json::Value> = {
+   89:                 let mut attempts: u32 = 0;
+   90:                 loop {
+   91:                     attempts += 1;
+   92:                     let resp_result = client.get(&url).send().await;
+   93:                     match resp_result {
+   94:                         Ok(r) => match read_body_json(r).await {
+   95:                             Ok(v) => break Some(v),
+   96:                             Err(e) if attempts < INNER_ATTEMPTS => {
+   97:                                 tracing::warn!(
+   98:                                     "📈 [{}] kline-поллер: JSON не разобран, попытка {}/{}: {}",
+   99:                                     symbol, attempts, INNER_ATTEMPTS, e
+  100:                                 );
+  101:                                 let backoff = INNER_BACKOFF_MS
+  102:                                     [(attempts - 1) as usize % INNER_BACKOFF_MS.len()];
+  103:                                 tokio::time::sleep(Duration::from_millis(backoff)).await;
+  104:                                 continue;
+  105:                             }
+  106:                             Err(e) => {
+  107:                                 consec_fails += 1;
+  108:                                 pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  109:                                 tracing::warn!(
+  110:                                     "📈 [{}] kline-поллер: ответ не разобран \
+  111:                                      (фейл {}, пауза {}с, REST-тишина {}с): {}",
+  112:                                     symbol, consec_fails, pause_secs,
+  113:                                     rest_silence(last_ok_ms), e
+  114:                                 );
+  115:                                 break None;
+  116:                             }
+  117:                         },
+  118:                         Err(e) if attempts < INNER_ATTEMPTS => {
+  119:                             tracing::warn!(
+  120:                                 "📈 [{}] kline-поллер: запрос не прошёл, попытка {}/{}: {}",
+  121:                                 symbol, attempts, INNER_ATTEMPTS, e
+  122:                             );
+  123:                             let backoff = INNER_BACKOFF_MS
+  124:                                 [(attempts - 1) as usize % INNER_BACKOFF_MS.len()];
+  125:                             tokio::time::sleep(Duration::from_millis(backoff)).await;
+  126:                             continue;
+  127:                         }
+  128:                         Err(e) => {
+  129:                             consec_fails += 1;
+  130:                             pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  131:                             tracing::warn!(
+  132:                                 "📈 [{}] kline-поллер: запрос не прошёл \
+  133:                                  (фейл {}, пауза {}с, REST-тишина {}с): {}",
+  134:                                 symbol, consec_fails, pause_secs,
+  135:                                 rest_silence(last_ok_ms), e
+  136:                             );
+  137:                             break None;
+  138:                         }
+  139:                     }
+  140:                 }
+  141:             };
+  142: 
+  143:             // 🛡️ Все 3 внутренние попытки провалились — пропускаем обработку,
+  144:             // внешняя pause_secs сработает на следующем тике.
+  145:             let Some(v) = v_opt else { continue };
+  146: 
+  147:             // 🔧 АНТИ-БАН: -1003 = IP ban — пауза 120с, бан не продлеваем
+  148:             if v["code"].as_i64() == Some(-1003) {
+  149:                 pause_secs = 120;
+  150:                 consec_fails += 1;
+  151:                 tracing::error!(
+  152:                     "📈 [{}] kline-поллер: 🚨 IP BANNED (-1003): {} — пауза 120с",
+  153:                     symbol,
+  154:                     v["msg"].as_str().unwrap_or("?")
+  155:                 );
+  156:                 continue;
+  157:             }
+  158:             // Прочие ошибки API (не массив)
+  159:             if v.as_array().is_none() {
+  160:                 consec_fails += 1;
+  161:                 pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  162:                 tracing::warn!(
+  163:                     "📈 [{}] kline-поллер: ответ не массив \
+  164:                      (фейл {}, пауза {}с, REST-тишина {}с): {}",
+  165:                     symbol, consec_fails, pause_secs,
+  166:                     rest_silence(last_ok_ms), v
+  167:                 );
+  168:                 continue;
+  169:             }
+  170: 
+  171:             // Успех: сброс счётчиков
+  172:             consec_fails = 0;
+  173:             pause_secs = 0;
+  174:             last_ok_ms = chrono::Utc::now().timestamp_millis();
+  175: 
+  176:             let rows = v.as_array().unwrap();
+  177: 
+  178:             for row in rows {
+  179:                 let Some(open_time) = row[0].as_i64() else { continue };
+  180:                 let Some(close_time) = row[6].as_i64() else { continue };
+  181:                 if close_time >= chrono::Utc::now().timestamp_millis() {
+  182:                     continue; // ещё формируется
+  183:                 }
+  184:                 if open_time <= last_open_time {
+  185:                     continue; // уже публиковали
+  186:                 }
+  187:                 let p = |i: usize| row[i].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+  188:                 last_open_time = open_time;
+  189: 
+  190:                 let close = p(4);
+  191:                 hub.publish(WebSocketMessage::Kline(KlineMessage {
+  192:                     symbol: symbol.to_uppercase(),
+  193:                     open: p(1),
+  194:                     high: p(2),
+  195:                     low: p(3),
+  196:                     close,
+  197:                     volume: p(5),
+  198:                     taker_buy_volume: p(9),
+  199:                     timestamp: close_time,
+  200:                     is_closed: true,
+  201:                     is_backfill: !backfilled,
+  202:                 }));
+  203:                 if backfilled {
+  204:                     tracing::info!(
+  205:                         "📈 [{}] kline-поллер: свеча опубликована (open_time={}, close={})",
+  206:                         symbol, open_time, close
+  207:                     );
+  208:                 }
+  209:             }
+  210: 
+  211:             if !rows.is_empty() {
+  212:                 if !backfilled {
+  213:                     tracing::info!(
+  214:                         "📈 [{}] kline-поллер: backfill завершён ({} свечей истории)",
+  215:                         symbol, rows.len()
+  216:                     );
+  217:                 }
+  218:                 backfilled = true;
+  219:             }
+  220:         }
+  221:     });
+  222: }
+  223: 
+  224: /// 🔍 V3.2: тело ответа как текст + ручной парсинг. При ошибке в сообщение
+  225: /// попадает HTTP-статус и первые 160 символов тела — сразу видно, ЧТО
+  226: /// вернул тестнет (HTML-страница, JSON-ошибка, пустота) вместо голого
+  227: /// "error decoding response body".
+  228: async fn read_body_json(r: reqwest::Response) -> Result<serde_json::Value, String> {
+  229:     let status = r.status();
+  230:     let body = match r.text().await {
+  231:         Ok(b) => b,
+  232:         Err(e) => return Err(format!("HTTP {} | тело не прочитано: {}", status, e)),
+  233:     };
+  234:     match serde_json::from_str::<serde_json::Value>(&body) {
+  235:         Ok(v) => Ok(v),
+  236:         Err(e) => Err(format!(
+  237:             "HTTP {} | тело[:160]: {:?} | serde: {}",
+  238:             status,
+  239:             body.chars().take(160).collect::<String>(),
+  240:             e
+  241:         )),
+  242:     }
+  243: }
+  244: 
+  245: /// 🆕 Phase B: Bybit V5 kline poller.
+  246: ///
+  247: /// Отличия от Binance:
+  248: ///   1. URL: /v5/market/kline?category=linear&symbol=XAUUSDT&interval=60&limit=2
+  249: ///   2. interval = "60" (число минут), не "1h" как у Binance
+  250: ///   3. Response: result.list — array of arrays, НО РЕВЕРСНУТЫЙ (новейшие первыми!)
+  251: ///      Format: [start, open, high, low, close, volume, turnover, ...]
+  252: ///      Время — в СЕКУНДАХ (не миллисекундах как у Binance!)
+  253: ///   4. confirm=true — свеча закрыта
+  254: pub fn spawn_bybit(
+  255:     children: &mut tokio::task::JoinSet<()>,
+  256:     hub: Arc<WebSocketHub>,
+  257:     rest_base: String,
+  258:     symbol: String,
+  259:     interval: String,
+  260: ) {
+  261:     children.spawn(async move {
+  262:         let client = reqwest::Client::builder()
+  263:             .timeout(Duration::from_secs(10))
+  264:             .pool_idle_timeout(std::time::Duration::from_secs(20)).tcp_keepalive(std::time::Duration::from_secs(15))/* P19-POOL */.build()
+  265:             .unwrap_or_default();
+  266:         let base = rest_base.trim_end_matches('/').to_string();
+  267: 
+  268:         // Конвертация interval строки в Bybit-формат:
+  269:         //   "1h" → "60", "4h" → "240", "15m" → "15", "1d" → "D", "1w" → "W"
+  270:         let bybit_interval = match interval.as_str() {
+  271:             "1m" => "1".to_string(),
+  272:             "5m" => "5".to_string(),
+  273:             "15m" => "15".to_string(),
+  274:             "30m" => "30".to_string(),
+  275:             "1h" => "60".to_string(),
+  276:             "4h" => "240".to_string(),
+  277:             "1d" => "D".to_string(),
+  278:             "1w" => "W".to_string(),
+  279:             "1M" => "M".to_string(),
+  280:             other => other.to_string(),
+  281:         };
+  282: 
+  283:         // 🔧 FIX BUG#1: длительность интервала в мс — для честного close_time.
+  284:         // Раньше: close_time_ms = open_time_ms + 3600_000 (хардкод 1h!),
+  285:         // а gold_dca работает на 4h → незакрытые 4h-свечи публиковались
+  286:         // через час как is_closed=true, реальное закрытие терялось.
+  287:         let bybit_interval_ms: i64 = match bybit_interval.as_str() {
+  288:             "1" => 60_000,
+  289:             "5" => 300_000,
+  290:             "15" => 900_000,
+  291:             "30" => 1_800_000,
+  292:             "60" => 3_600_000,
+  293:             "120" => 7_200_000,
+  294:             "240" => 14_400_000,
+  295:             "360" => 21_600_000,
+  296:             "480" => 28_800_000,
+  297:             "720" => 43_200_000,
+  298:             "D" => 86_400_000,
+  299:             "W" => 604_800_000,
+  300:             // Оценка 31 день: если чуть недозакрыта — опубликуется на
+  301:             // следующем цикле (10с), безопасно в обе стороны.
+  302:             "M" => 2_678_400_000,
+  303:             _ => 3_600_000,
+  304:         };
+  305: 
+  306:         let mut last_open_time: i64 = 0;
+  307:         let mut backfilled = false;
+  308:         let mut poll = tokio::time::interval(Duration::from_secs(10));
+  309:         poll.tick().await;
+  310: 
+  311:         let mut pause_secs: u64 = 0;
+  312:         let mut consec_fails: u64 = 0;
+  313: 
+  314:         loop {
+  315:             poll.tick().await;
+  316: 
+  317:             if pause_secs > 0 {
+  318:                 tokio::time::sleep(Duration::from_secs(pause_secs)).await;
+  319:             }
+  320: 
+  321:             if crate::utils::rate_limiter::LIMITER.acquire(false).await
+  322:                 == crate::utils::rate_limiter::Acquire::Throttle
+  323:             {
+  324:                 continue;
+  325:             }
+  326: 
+  327:             let limit = if backfilled { 2 } else { 250 };
+  328:             let url = format!(
+  329:                 "{}/v5/market/kline?category=linear&symbol={}&interval={}&limit={}",
+  330:                 base,
+  331:                 symbol.to_uppercase(),
+  332:                 bybit_interval,
+  333:                 limit
+  334:             );
+  335: 
+  336:             let resp = match client.get(&url).send().await {
+  337:                 Ok(r) => r,
+  338:                 Err(e) => {
+  339:                     consec_fails += 1;
+  340:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  341:                     tracing::warn!(
+  342:                         "📈 [{}] kline-поллер (Bybit): запрос не прошёл (фейл {}, пауза {}с): {}",
+  343:                         symbol, consec_fails, pause_secs, e
+  344:                     );
+  345:                     continue;
+  346:                 }
+  347:             };
+  348: 
+  349:             // 🔧 FIX BUG#1: сначала ТЕКСТ и детект HTML — геоблок Bybit с RU-IP
+  350:             // отдаёт страницу вместо JSON. Раньше resp.json() падал с
+  351:             // "error decoding response body" без диагностики, поллер крутился
+  352:             // 48ч впустую и ни разу не публиковал свечу (= candles=0).
+  353:             let body = match resp.text().await {
+  354:                 Ok(b) => b,
+  355:                 Err(e) => {
+  356:                     consec_fails += 1;
+  357:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  358:                     tracing::warn!(
+  359:                         "📈 [{}] kline-поллер (Bybit): тело не прочитано \
+  360:                          (фейл {}, пауза {}с): {}",
+  361:                         symbol, consec_fails, pause_secs, e
+  362:                     );
+  363:                     continue;
+  364:                 }
+  365:             };
+  366:             if looks_like_html(None, &body) {
+  367:                 // HTML не станет JSON от ретраев — длинная пауза, внятный лог
+  368:                 consec_fails += 1;
+  369:                 pause_secs = GEOBLOCK_PAUSE_SECS;
+  370:                 tracing::error!(
+  371:                     "📈 [{}] kline-поллер (Bybit): 🚨 GEOBLOCK — HTML вместо JSON \
+  372:                      (фейл {}, пауза {}с): {}",
+  373:                     symbol, consec_fails, pause_secs, body_head(&body)
+  374:                 );
+  375:                 continue;
+  376:             }
+  377:             let v: serde_json::Value = match serde_json::from_str(&body) {
+  378:                 Ok(v) => v,
+  379:                 Err(e) => {
+  380:                     consec_fails += 1;
+  381:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  382:                     tracing::warn!(
+  383:                         "📈 [{}] kline-поллер (Bybit): ответ не разобран \
+  384:                          (фейл {}, пауза {}с): {} | тело: {}",
+  385:                         symbol, consec_fails, pause_secs, e, body_head(&body)
+  386:                     );
+  387:                     continue;
+  388:                 }
+  389:             };
+  390: 
+  391:             // Проверяем Bybit V5 retCode
+  392:             let ret_code = v["retCode"].as_i64().unwrap_or(-1);
+  393:             if ret_code != 0 {
+  394:                 consec_fails += 1;
+  395:                 pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  396:                 tracing::warn!(
+  397:                     "📈 [{}] kline-поллер (Bybit): retCode={} msg={}",
+  398:                     symbol, ret_code,
+  399:                     v["retMsg"].as_str().unwrap_or("?")
+  400:                 );
+  401:                 continue;
+  402:             }
+  403: 
+  404:             let rows = match v["result"]["list"].as_array() {
+  405:                 Some(a) => a,
+  406:                 None => {
+  407:                     consec_fails += 1;
+  408:                     pause_secs = (10u64.saturating_mul(consec_fails.min(6))).min(60);
+  409:                     tracing::warn!(
+  410:                         "📈 [{}] kline-поллер (Bybit): result.list не массив: {}",
+  411:                         symbol, v
+  412:                     );
+  413:                     continue;
+  414:                 }
+  415:             };
+  416: 
+  417:             // Успех
+  418:             consec_fails = 0;
+  419:             pause_secs = 0;
+  420: 
+  421:             // Bybit возвращает свечи В ОБРАТНОМ ПОРЯДКЕ (новейшие первыми).
+  422:             // Разворачиваем для последовательной обработки.
+  423:             let mut sorted_rows: Vec<&serde_json::Value> = rows.iter().collect();
+  424:             sorted_rows.reverse();
+  425: 
+  426:             for row in sorted_rows {
+  427:                 // Bybit kline row format:
+  428:                 // [start (sec), open, high, low, close, volume, turnover]
+  429:                 // 0     1     2     3    4      5       6
+  430:                 let Some(start_str) = row[0].as_str() else { continue };
+  431:                 let Ok(start_raw) = start_str.parse::<i64>() else { continue };
+  432:                 let open_time_ms = if start_raw > 100_000_000_000 { start_raw } else { start_raw * 1000 }; // v3.6 FIX: Bybit TESTNET gives ms (13 digits), MAINNET gives sec - autodetect // sec → ms
+  433:                 // 🔧 FIX BUG#1: было `+ 3600_000` (хардкод 1h — битые 4h-свечи!)
+  434:                 let close_time_ms = open_time_ms + bybit_interval_ms;
+  435: 
+  436:                 // Пропускаем незакрытые свечи
+  437:                 if close_time_ms >= chrono::Utc::now().timestamp_millis() {
+  438:                     continue;
+  439:                 }
+  440:                 if open_time_ms <= last_open_time {
+  441:                     continue;
+  442:                 }
+  443: 
+  444:                 let p = |i: usize| row[i].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+  445:                 last_open_time = open_time_ms;
+  446: 
+  447:                 let close = p(4);
+  448:                 hub.publish(WebSocketMessage::Kline(KlineMessage {
+  449:                     symbol: symbol.to_uppercase(),
+  450:                     open: p(1),
+  451:                     high: p(2),
+  452:                     low: p(3),
+  453:                     close,
+  454:                     volume: p(5),
+  455:                     taker_buy_volume: 0.0, // Bybit не отдаёт taker_buy в этом endpoint
+  456:                     timestamp: close_time_ms,
+  457:                     is_closed: true,
+  458:                     is_backfill: !backfilled,
+  459:                 }));
+  460:                 if backfilled {
+  461:                     tracing::info!(
+  462:                         "📈 [{}] kline-поллер (Bybit): свеча опубликована (open_time={}, close={})",
+  463:                         symbol, open_time_ms, close
+  464:                     );
+  465:                 }
+  466:             }
+  467: 
+  468:             if !rows.is_empty() {
+  469:                 if !backfilled {
+  470:                     tracing::info!(
+  471:                         "📈 [{}] kline-поллер (Bybit): backfill завершён ({} свечей истории)",
+  472:                         symbol, rows.len()
+  473:                     );
+  474:                 }
+  475:                 backfilled = true;
+  476:             }
+  477:         }
+  478:     });
+  479: }
+  480: 
+  481: /// 🔧 FIX: детект HTML-ответа (геоблок-страница Bybit) ДО попытки JSON-парсинга
+  482: fn looks_like_html(content_type: Option<&str>, body: &str) -> bool {
+  483:     if let Some(ct) = content_type {
+  484:         if ct.to_ascii_lowercase().contains("text/html") {
+  485:             return true;
+  486:         }
+  487:     }
+  488:     let head = body.trim_start().to_ascii_lowercase();
+  489:     head.starts_with("<!doctype html") || head.starts_with("<html")
+  490: }
+  491: 
+  492: /// 🔧 FIX: голова тела для диагностики (первые 160 символов, без переносов)
+  493: fn body_head(body: &str) -> String {
+  494:     body.chars()
+  495:         .take(160)
+  496:         .map(|c| if c.is_control() { ' ' } else { c })
+  497:         .collect()
+  498: }
+  499: 
+  500: /// Секунды с последнего успешного REST (для строк диагностики)
+  501: fn rest_silence(last_ok_ms: i64) -> i64 {
+  502:     if last_ok_ms == 0 {
+  503:         return -1; // ещё ни одного успеха
+  504:     }
+  505:     chrono::Utc::now().timestamp_millis() / 1000 - last_ok_ms / 1000
+  506: }
+  507: 
+  508: /// v4.0: OKX V5 kline poller (public /api/v5/market/candles).
+  509: /// bar: 1m/3m/5m/15m/30m/1H/2H/4H/6H/12H. Rows NEWEST-first:
+  510: /// [ts, o, h, l, c, vol_contracts, vol_base, vol_quote, confirm]
+  511: pub fn spawn_okx(
+  512:     children: &mut tokio::task::JoinSet<()>,
+  513:     hub: Arc<WebSocketHub>,
+  514:     rest_base: String,
+  515:     symbol: String,
+  516:     interval: String,
+  517: ) {
+  518:     children.spawn(async move {
+  519:         let client = reqwest::Client::builder()
+  520:             .timeout(Duration::from_secs(10))
+  521:             .pool_idle_timeout(std::time::Duration::from_secs(20)).tcp_keepalive(std::time::Duration::from_secs(15))/* P19-POOL */.build()
+  522:             .unwrap_or_default();
+  523:         let base = rest_base.trim_end_matches('/').to_string();
+  524: 
+  525:         let bar = match interval.as_str() {
+  526:             "1h" => "1H".to_string(),
+  527:             "2h" => "2H".to_string(),
+  528:             "4h" => "4H".to_string(),
+  529:             "6h" => "6H".to_string(),
+  530:             "12h" => "12H".to_string(),
+  531:             other => other.to_string(),
+  532:         };
+  533:         let interval_ms: i64 = match bar.as_str() {
+  534:             "1m" => 60_000,
+  535:             "3m" => 180_000,
+  536:             "5m" => 300_000,
+  537:             "15m" => 900_000,
+  538:             "30m" => 1_800_000,
+  539:             "1H" => 3_600_000,
+  540:             "2H" => 7_200_000,
+  541:             "4H" => 14_400_000,
+  542:             "6H" => 21_600_000,
+  543:             "12H" => 43_200_000,
+  544:             _ => 3_600_000,
+  545:         };
+  546: 
+  547:         let inst_id = okx_inst_id_from_symbol(&symbol);
+  548: 
+  549:         let mut last_open_time: i64 = 0;
+  550:         let mut backfilled = false;
+  551:         let mut consec_fails: u64 = 0;
+  552:         let mut poll = tokio::time::interval(Duration::from_secs(10));
+  553:         poll.tick().await;
+  554: 
+  555:         loop {
+  556:             poll.tick().await;
+  557: 
+  558:             let limit = if backfilled { 3 } else { 250 };
+  559:             let url = format!(
+  560:                 "{}/api/v5/market/candles?instId={}&bar={}&limit={}",
+  561:                 base, inst_id, bar, limit
+  562:             );
+  563: 
+  564:             let body = match client.get(&url).send().await {
+  565:                 Ok(r) => match r.text().await {
+  566:                     Ok(b) => b,
+  567:                     Err(e) => {
+  568:                         consec_fails += 1;
+  569:                         let pause = (10u64 * consec_fails.min(6)).min(60);
+  570:                         tracing::warn!(
+  571:                             "[{}] kline-poller (OKX): body read failed (fail {}, pause {}s): {}",
+  572:                             symbol, consec_fails, pause, e
+  573:                         );
+  574:                         tokio::time::sleep(Duration::from_secs(pause)).await;
+  575:                         continue;
+  576:                     }
+  577:                 },
+  578:                 Err(e) => {
+  579:                     consec_fails += 1;
+  580:                     let pause = (10u64 * consec_fails.min(6)).min(60);
+  581:                     tracing::warn!(
+  582:                         "[{}] kline-poller (OKX): request failed (fail {}, pause {}s): {}",
+  583:                         symbol, consec_fails, pause, e
+  584:                     );
+  585:                     tokio::time::sleep(Duration::from_secs(pause)).await;
+  586:                     continue;
+  587:                 }
+  588:             };
+  589: 
+  590:             if body.trim_start().starts_with('<') {
+  591:                 tracing::error!(
+  592:                     "[{}] kline-poller (OKX): GEOBLOCK/HTML instead of JSON: {}",
+  593:                     symbol,
+  594:                     body.chars().take(120).collect::<String>()
+  595:                 );
+  596:                 tokio::time::sleep(Duration::from_secs(300)).await;
+  597:                 continue;
+  598:             }
+  599: 
+  600:             let v: serde_json::Value = match serde_json::from_str(&body) {
+  601:                 Ok(v) => v,
+  602:                 Err(e) => {
+  603:                     consec_fails += 1;
+  604:                     let pause = (10u64 * consec_fails.min(6)).min(60);
+  605:                     tracing::warn!(
+  606:                         "[{}] kline-poller (OKX): parse failed (fail {}, pause {}s): {} | body: {}",
+  607:                         symbol,
+  608:                         consec_fails,
+  609:                         pause,
+  610:                         e,
+  611:                         body.chars().take(120).collect::<String>()
+  612:                     );
+  613:                     tokio::time::sleep(Duration::from_secs(pause)).await;
+  614:                     continue;
+  615:                 }
+  616:             };
+  617: 
+  618:             if v["code"].as_str().unwrap_or("-1") != "0" {
+  619:                 consec_fails += 1;
+  620:                 tracing::warn!(
+  621:                     "[{}] kline-poller (OKX): code={} msg={}",
+  622:                     symbol,
+  623:                     v["code"].as_str().unwrap_or("?"),
+  624:                     v["msg"].as_str().unwrap_or("?")
+  625:                 );
+  626:                 tokio::time::sleep(Duration::from_secs(10)).await;
+  627:                 continue;
+  628:             }
+  629: 
+  630:             let rows = match v["data"].as_array() {
+  631:                 Some(a) => a,
+  632:                 None => {
+  633:                     consec_fails += 1;
+  634:                     tracing::warn!("[{}] kline-poller (OKX): data is not an array", symbol);
+  635:                     tokio::time::sleep(Duration::from_secs(10)).await;
+  636:                     continue;
+  637:                 }
+  638:             };
+  639: 
+  640:             consec_fails = 0;
+  641: 
+  642:             let mut sorted_rows: Vec<&serde_json::Value> = rows.iter().collect();
+  643:             sorted_rows.reverse(); // oldest first
+  644: 
+  645:             for row in sorted_rows {
+  646:                 let Some(open_ms) = row[0].as_str().and_then(|s| s.parse::<i64>().ok()) else {
+  647:                     continue;
+  648:                 };
+  649:                 let close_ms = open_ms + interval_ms;
+  650:                 if close_ms >= chrono::Utc::now().timestamp_millis() {
+  651:                     continue; // candle still forming
+  652:                 }
+  653:                 if open_ms <= last_open_time {
+  654:                     continue; // already published
+  655:                 }
+  656:                 let p = |i: usize| row[i].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+  657:                 last_open_time = open_ms;
+  658: 
+  659:                 hub.publish(WebSocketMessage::Kline(KlineMessage {
+  660:                     symbol: symbol.to_uppercase(),
+  661:                     open: p(1),
+  662:                     high: p(2),
+  663:                     low: p(3),
+  664:                     close: p(4),
+  665:                     volume: p(6), // volCcy = base-asset volume (Binance-like)
+  666:                     taker_buy_volume: 0.0,
+  667:                     timestamp: close_ms,
+  668:                     is_closed: true,
+  669:                     is_backfill: !backfilled,
+  670:                 }));
+  671:             }
+  672: 
+  673:             if !rows.is_empty() {
+  674:                 if !backfilled {
+  675:                     tracing::info!(
+  676:                         "[{}] kline-poller (OKX): backfill done ({} candles)",
+  677:                         symbol,
+  678:                         rows.len()
+  679:                     );
+  680:                 }
+  681:                 backfilled = true;
+  682:             }
+  683:         }
+  684:     });
+  685: }
+  686: 
+  687: /// v4.0: "XAUUSDT" -> "XAU-USDT-SWAP"
+  688: fn okx_inst_id_from_symbol(symbol: &str) -> String {
+  689:     let s = symbol.trim().to_uppercase();
+  690:     if s.contains('-') {
+  691:         if s.ends_with("-SWAP") { s } else { format!("{}-SWAP", s) }
+  692:     } else if let Some(base) = s.strip_suffix("USDT") {
+  693:         format!("{}-USDT-SWAP", base)
+  694:     } else {
+  695:         s
+  696:     }
+  697: }
+=== GREP streams/subscribe across src ===
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:8: use tracing_subscriber::{fmt, EnvFilter};
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:23: use tracing_subscriber::prelude::*;
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:41: tracing_subscriber::registry()
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:336: let ws_rx = hub.subscribe();
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:337: let shutdown_rx = shutdown_tx_bot.subscribe();
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:492: Some(exchange::user_stream::OrderEventsRx::new(us.subscribe()))
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:1216: websocket::WebSocketMessage::BookTicker(_) => "BookTicker",
+C:\Users\BASE_PC\scalping_agentsGLM\src\agents\state_agent.rs:30: // ✅ 3г: цена позиции по миду bookTicker
+C:\Users\BASE_PC\scalping_agentsGLM\src\agents\state_agent.rs:31: WebSocketMessage::BookTicker(bt) => {
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\analyze_slippage.rs:1: //! analyze_slippage.rs — калибровка модели проскальзывания на bookTicker-датасете.
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\analyze_slippage.rs:4: //!   cargo run --release --bin analyze_slippage -- data/bookticker_live
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\analyze_slippage.rs:5: //!   cargo run --release --bin analyze_slippage -- data/bookticker_live --symbol 1000PEPEUSDT
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\analyze_slippage.rs:6: //!   cargo run --release --bin analyze_slippage -- data/bookticker_live --sizes 100,500,1000,5000
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\analyze_slippage.rs:9: //!   1. Сканирует директорию на CSV-файлы bookTicker (формат: SYMBOL-YYYY-MM-DD.csv)
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:4: //!   --data spread      — merged bookTicker + aggTrades (для spread_capture)
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:5: //!   --data book        — только bookTicker (без aggTrades, fill симулируется)
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:9: //!   backtest <trades_dir> --bot <name> --data spread --bookticker <book_dir>
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:26: BookTickerMessage, KlineMessage, TradeMessage, WebSocketMessage,
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:41: Book, // ✅ НОВОЕ: только bookTicker, без aggTrades
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:99: bookticker_path: Option<String>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:114: bookticker_path: None,
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:126: "--bookticker" => { args.bookticker_path = Some(argv[i + 1].clone()); i += 2; }
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:132: "book" | "bookticker" => DataType::Book,
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:147: println!("  backtest <trades_path> --bot <name> --data spread --bookticker <book_path>");
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:196: DataType::Spread => "spread (bookTicker + aggTrades)",
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:197: DataType::Book => "bookTicker only (fill simulated)",
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:242: return Err(anyhow!("No bookTicker CSV files found in {}", args.primary_path));
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:244: println!("\n📚 Found {} bookTicker files", book_files.len());
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:269: let book_path = args.bookticker_path.as_ref()
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:270: .ok_or_else(|| anyhow!("--bookticker required for --data spread"))?;
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:277: return Err(anyhow!("No matching trades/bookticker pairs found"));
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:489: // MERGED STREAM (bookTicker + aggTrades)
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:559: msg = WebSocketMessage::BookTicker(bt);
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:647: // ✅ НОВАЯ ФУНКЦИЯ: BOOK-ONLY STREAM (только bookTicker)
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:648: // Симулирует fill по bookTicker данным, без aggTrades.
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:704: let msg = WebSocketMessage::BookTicker(bt.clone());
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:805: fn parse_book_ticker(line: &str, symbol: &str) -> Option<BookTickerMessage> {
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\backtest.rs:813: Some(BookTickerMessage {
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:1: //! Recorder для Binance Futures bookTicker через WebSocket.
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:6: //!   cargo run --release --bin record_bookticker -- DOGEUSDT
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:8: //! Файл растёт в data/bookticker_live/DOGEUSDT-YYYY-MM-DD.csv
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:17: use tokio_tungstenite::connect_async;
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:20: const DATA_DIR: &str = "data/bookticker_live";
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:26: .ok_or_else(|| anyhow!("Usage: record_bookticker <SYMBOL> (e.g. DOGEUSDT)"))?;
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:32: tracing_subscriber::fmt()
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:37: let url = format!("{}/{}@bookTicker", WS_BASE, symbol_lower);
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\record_bookticker.rs:47: let connect = connect_async(&url).await;
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:6: use tokio_tungstenite::{connect_async, tungstenite::Message};
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:10: async fn probe(name: &str, url: &str, subscribe: Option<&str>) {
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:12: let ws = match tokio::time::timeout(Duration::from_secs(10), connect_async(url)).await {
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:19: if let Some(payload) = subscribe {
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:21: tracing::error!("[{}] subscribe send: {}", name, e);
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:41: if v.get("result").is_some() { continue; } // ack на SUBSCRIBE
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:49: "bookTicker" => book += 1,
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:54: tracing::info!("[{}] ИТОГ за {}с: aggTrade={} bookTicker={} kline={} другое={}",
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:61: tracing_subscriber::fmt().with_env_filter("info").init();
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:71: &format!("wss://stream.binance.com:9443/stream?streams={s}@aggTrade"),
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:76: "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade",
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:81: &format!("wss://fstream.binance.com/stream?streams={s}@markPrice"),
+C:\Users\BASE_PC\scalping_agentsGLM\src\bin\ws_probe.rs:86: &format!("wss://fstream.binance.com/stream?streams={s}@miniTicker"),
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\kline_poller.rs:2: //! fstream отдаёт только bookTicker (доказано пробником), REST fapi работает полностью.
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:13: use tokio_tungstenite::{connect_async, tungstenite::Message};
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:125: pub fn subscribe(&self) -> broadcast::Receiver<OrderEvent> {
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:126: self.events_tx.subscribe()
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:163: let (ws, _) = connect_async(url).await?;
+C:\Users\BASE_PC\scalping_agentsGLM\src\strategies\market_regime.rs:64: WebSocketMessage::BookTicker(bt) => {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:11: use tokio_tungstenite::{connect_async, tungstenite::Message};
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:15: // fstream доказанно отдаёт только bookTicker, свечи приходят через
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:49: BookTicker(BookTickerMessage),
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:89: pub struct BookTickerMessage {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:169: // ✅ 3г: fstream из нашего региона отдаёт только bookTicker (пробник, 2 сети).
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:172: format!("{s}@bookTicker", s = sym)
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:175: "{s}@aggTrade/{s}@bookTicker/{s}@depth20@100ms/{s}@kline_1m",
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:196: "{}/stream?streams={}",
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:209: let full = format!("{}/stream?streams={}", ep.trim_end_matches('/'), streams);
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:220: // kline/orderbook intentionally NOT subscribed: 1m candles in the shared
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:224: let subscribe_msg: Option<String> = if is_bybit {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:226: "{{\"op\":\"subscribe\",\"args\":[\"tickers.{s}\",\"publicTrade.{s}\"]}}",
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:232: "{{\"op\":\"subscribe\",\"args\":[{{\"channel\":\"tickers\",\"instId\":\"{i}\"}},{{\"channel\":\"trades\",\"instId\":\"{i}\"}}]}}",
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:268: subscribe_msg.as_deref(),
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:371: pub fn subscribe(&self) -> broadcast::Receiver<WebSocketMessage> {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:372: self.tx.subscribe()
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:427: subscribe_msg: Option<&str>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:435: connect_async(url),
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:458: let is_okx = subscribe_msg.map(|m| m.contains("instId")).unwrap_or(false);    let is_bybit = !is_okx && subscribe_msg.is_some();
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:460: // changed fields - without this cache BookTicker would be choppy.
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:463: if let Some(sub) = subscribe_msg {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:466: return Err(anyhow!("Bybit subscribe send failed: {}", e));
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:524: WebSocketMessage::BookTicker(_) => { health.book_tickers.fetch_add(1, Ordering::Relaxed); }
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:670: // (snapshot + delta) into full BookTickerMessage values.
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:680: // Handles exactly what we subscribe to: tickers.XAUUSDT (best bid/ask) and
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:721: return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:783: if stream.contains("@bookTicker") {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:793: return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:805: if stream.contains("@kline") {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:877: return Some(WebSocketMessage::BookTicker(BookTickerMessage {
+=== GREP candle publish/channel API across src ===
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:230: let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(4);
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:429: ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:431: shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:458: mut ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:460: mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:985: Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:986: Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:987: Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:1195: Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+C:\Users\BASE_PC\scalping_agentsGLM\src\main.rs:1199: Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:54: pub type OrderEventsRx = tokio::sync::Mutex<broadcast::Receiver<OrderEvent>>;
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:57: events_tx: broadcast::Sender<OrderEvent>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:70: let (events_tx, _) = broadcast::channel::<OrderEvent>(512);
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:125: pub fn subscribe(&self) -> broadcast::Receiver<OrderEvent> {
+C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\user_stream.rs:162: async fn connect_and_read(url: &str, tx: &broadcast::Sender<OrderEvent>) -> Result<()> {
+C:\Users\BASE_PC\scalping_agentsGLM\src\execution\execution_engine.rs:290: Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+C:\Users\BASE_PC\scalping_agentsGLM\src\execution\execution_engine.rs:291: Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:148: tx: broadcast::Sender<WebSocketMessage>,
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:216: let (tx, _rx) = broadcast::channel::<WebSocketMessage>(5000);
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:371: pub fn subscribe(&self) -> broadcast::Receiver<WebSocketMessage> {
+C:\Users\BASE_PC\scalping_agentsGLM\src\websocket\mod.rs:428: tx: broadcast::Sender<WebSocketMessage>,
+=== GREP wiring in main.rs ===
+
+  mod webui;
+> mod websocket;
+  
+  fn init_logger() -> Result<()> {
+      // ============================================================
+>     // WebSocket Hubs
+      // ============================================================
+>     let mut hubs: HashMap<String, Arc<websocket::WebSocketHub>> = HashMap::new();
+  
+      // ✅ v3.5: COMMON-хаб создаём ТОЛЬКО если есть хотя бы один не-изолированный
+      if has_common_bots {
+>         let spot_hub = websocket::WebSocketHub::new(&global.ws_url, &global_symbol).await?;
+>         tracing::info!("📡 [COMMON] WebSocket Hub для {} (spot) запущен", global_symbol);
+          hubs.insert(format!("common:{}", global_symbol), spot_hub);
+      } else {
+  
+>         let hub = websocket::WebSocketHub::new(&ws_url, &sym).await?;
+          // ✅ v3.5: честный ярлык рынка — testnet.binancefuture.com НЕ содержит
+          // "fstream", из-за чего futures-хабы метились как "(spot)".
+          tracing::info!(
+>             "📡 [ISOLATED] WebSocket Hub для {} ({}) запущен",
+              sym,
+              market_label
+          simulate: b.simulate,
+>         interval: b.kline_interval.clone(),
+          db_path: b.db_path_override.clone().unwrap_or_else(|| global.db_path.clone()),
+          rest_url: b.rest_url_override.clone().unwrap_or_else(|| global.rest_url.clone()),
+      // ✅ B2: rate-limiter — глобальный статик (utils::rate_limiter::LIMITER),
+>     // доступен из kline_poller напрямую, протягивать параметр не нужно.
+      let global_risk = Arc::new(risk::GlobalRiskManager::new());
+      // PATCH P15: portfolio equity base + restore today daily PnL
+      global: config::GlobalConfig,
+>     ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+      time_sync: exchange::SharedTimeSync,
+      shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+      filters: Option<Arc<exchange::FilterRegistry>>,
+>     hub: Arc<websocket::WebSocketHub>,
+      global_risk: Arc<risk::GlobalRiskManager>,
+  ) -> Result<()> {
+      global: config::GlobalConfig,
+>     mut ws_rx: tokio::sync::broadcast::Receiver<websocket::WebSocketMessage>,
+      time_sync: exchange::SharedTimeSync,
+      mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+      filters: Option<Arc<exchange::FilterRegistry>>,
+>     hub: Arc<websocket::WebSocketHub>,
+      global_risk: Arc<risk::GlobalRiskManager>,
+      children: &mut tokio::task::JoinSet<()>,
+          if rest_base.contains("bybit") {
+>             exchange::kline_poller::spawn_bybit(
+                  children,
+                  hub.clone(),
+                  symbol.clone(),
+>                 config.kline_interval.clone(),
+              );
+          } else if rest_base.contains("okx") {
+              // v4.0: OKX V5 candles via public REST
+>             exchange::kline_poller::spawn_okx(
+                  children,
+                  hub.clone(),
+                  symbol.clone(),
+>                 config.kline_interval.clone(),
+              );
+          } else {
+>             exchange::kline_poller::spawn(
+                  children,
+                  hub.clone(),
+                  symbol.clone(),
+>                 config.kline_interval.clone(),
+              );
+          }
+          tracing::info!(
+>             "[{}] 📈 kline-поллер запущен (REST, интервал {})",
+>             bot_name, config.kline_interval
+          );
+      }
+              Ok(message) => {
+>                 if let websocket::WebSocketMessage::Kline(k) = &message {
+                      if !k.is_closed || k.timestamp <= last_fed_candle_ts {
+                          continue;
+      if warm_fed < 200 {
+>         for k in hub.recent_klines() {
+              if !k.is_closed || k.timestamp <= last_fed_candle_ts {
+                  continue;
+              hist.is_backfill = true;
+>             let msg = websocket::WebSocketMessage::Kline(hist);
+              match strategy_agent.process(&msg, strategy.as_mut()).await {
+                  Ok(Some(_)) => warm_signals_dropped += 1,
+                      let kind = match &message {
+>                         websocket::WebSocketMessage::Kline(k) => {
+>                             if k.is_backfill { "Kline(backfill)" } else { "Kline(live)" }
+                          }
+>                         websocket::WebSocketMessage::Trade(_) => "Trade",
+>                         websocket::WebSocketMessage::OrderBook(_) => "OrderBook",
+>                         websocket::WebSocketMessage::BookTicker(_) => "BookTicker",
+                      };
+                      tracing::info!("[{}] 🔍 DIAG: первое сообщение из хаба: {}", bot_name, kind);
+                  }
+>                 if let websocket::WebSocketMessage::Kline(k) = &message {
+                      if k.is_backfill {
+                          diag_backfill_seen += 1;
+                  // её копия из broadcast здесь пропускается — и наоборот.
+>                 if let websocket::WebSocketMessage::Kline(k) = &message {
+                      if k.is_closed {
+                          if k.timestamp <= last_fed_candle_ts {
+                  // ============ EXIT-CHECK (с партиал-веткой) ============
+>                 // ✅ П3: backfill-свечи (история от kline-поллера) не проходят
+                  // exit-проверки: старая цена могла бы «закрыть» восстановленную
+                  // позицию по несуществующему SL/TP.
+                      &message,
+>                     websocket::WebSocketMessage::Kline(k) if k.is_backfill
+                  );
+                  if !is_backfill {
+                  let mut topup_fed: u64 = 0;
+>                 for k in hub.recent_klines() {
+                      if !k.is_closed || k.timestamp <= last_fed_candle_ts {
+                          continue;
+                      last_fed_candle_ts = k.timestamp;
+>                     let msg = websocket::WebSocketMessage::Kline(k.clone());
+                      match strategy_agent.process(&msg, strategy.as_mut()).await {
+                          Ok(Some(_)) => {} // сигнал из добора не исполняется
+
+

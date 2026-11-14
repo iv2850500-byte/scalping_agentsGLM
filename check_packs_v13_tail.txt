@@ -1,0 +1,19 @@
+
+# ============================================================
+# P65 block (appended by P65 pack) - E5c: critical call-sites on
+# AppError (config load + allow_live barrier -> exit 1 = FATAL,
+# supervisor does NOT restart). Markers: 'P65/' in src\**\*.rs.
+# Expected after install: 6.
+# ============================================================
+$p65Count = 0
+if (Test-Path "src") {
+    Get-ChildItem -Path "src" -Recurse -Filter "*.rs" | ForEach-Object {
+        $p65Count += ([regex]::Matches((Get-Content $_.FullName -Raw), [regex]::Escape("P65/"))).Count
+    }
+}
+Write-Host ("[P65] markers: {0} (installed if 6)" -f $p65Count)
+if ($p65Count -ge 6) {
+    Write-Host "[P65] OK: installed"
+} else {
+    Write-Host "[P65] MISSING/INCOMPLETE (run install_p65.ps1)"
+}

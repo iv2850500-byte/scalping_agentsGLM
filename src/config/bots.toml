@@ -1,0 +1,27 @@
+# ⚠️ API-ключи НЕ хранить в этом файле. Только в .env:
+#   BOT1_API_KEY=...
+#   BOT1_API_SECRET=...
+
+[[bots]]
+name = "bot_1"
+api_key = "${BOT1_API_KEY}"       # ← подставится вручную в коде (см. ниже)
+api_secret = "${BOT1_API_SECRET}"
+initial_balance = 1000.0
+sync_interval_sec = 60
+# AUDIT-P8 zombie, код не читает: position_size_percent = 5.0
+# AUDIT-P8 zombie, код не читает: max_daily_loss_percent = 3.0
+max_daily_loss_amount = 30.0
+circuit_breaker_window_sec = 1800
+circuit_breaker_cooldown_sec = 600
+order_timeout_sec = 15
+leverage = 1
+risk_per_trade_pct = 0.5
+maker_fee = 0.0002
+min_ev_pct = 0.0
+min_net_rr = 1.2
+max_concurrent_risk_pct = 2.0
+
+[bots.strategy]
+name = "BounceTrader"
+params = {}
+# AUDIT-P8: zombie-keys cleanup применён, изменений: 2

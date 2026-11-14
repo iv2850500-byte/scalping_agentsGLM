@@ -1,0 +1,556 @@
+use super::time_sync::TimeSync;
+use super::traits::{ExchangeClient, ExchangePosition, OrderResult};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use hmac::{Hmac, Mac};
+use reqwest::Client;
+use serde_json::Value;
+use sha2::Sha256;
+use std::sync::Arc;
+use std::time::Duration;
+
+type HmacSha256 = Hmac<Sha256>;
+
+pub struct BinanceFuturesClient {
+    api_key: String,
+    api_secret: String,
+    client: Client,
+    base_url: String,
+    time_sync: Arc<TimeSync>,
+}
+
+impl BinanceFuturesClient {
+    pub fn new(
+        api_key: &str,
+        api_secret: &str,
+        base_url: &str,
+        time_sync: Arc<TimeSync>,
+    ) -> Self {
+        Self {
+            api_key: api_key.to_string(),
+            api_secret: api_secret.to_string(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            time_sync,
+        }
+    }
+
+    fn now_ms(&self) -> i64 {
+        self.time_sync.now_ms()
+    }
+
+    fn sign(&self, query: &str) -> String {
+        let mut mac = HmacSha256::new_from_slice(self.api_secret.as_bytes()).unwrap();
+        mac.update(query.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+}
+
+#[async_trait]
+impl ExchangeClient for BinanceFuturesClient {
+    async fn sync_time(&self) -> Result<()> {
+        let url = format!("{}/fapi/v1/time", self.base_url);
+        let json: Value = self.client.get(&url).send().await?.json().await?;
+        let server_ms = json["serverTime"].as_i64().unwrap_or(0);
+        let local_ms = chrono::Utc::now().timestamp_millis();
+        let offset = server_ms - local_ms;
+        self.time_sync.set_offset(offset);
+        tracing::info!("⏰ Futures clock offset: {} ms", offset);
+        Ok(())
+    }
+
+    async fn place_market_order(
+        &self,
+        symbol: &str,
+        side: &str,
+        quantity: f64,
+        client_order_id: Option<String>,
+    ) -> Result<OrderResult> {
+        let ts = self.now_ms();
+        let qty_str = format!("{}", quantity);
+        let mut query = format!(
+            "symbol={}&side={}&type=MARKET&quantity={}&timestamp={}",
+            symbol, side, qty_str, ts
+        );
+        if let Some(id) = client_order_id {
+            query.push_str(&format!("&newClientOrderId={}", id));
+        }
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.post(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+        if let Some(err) = json.get("msg") {
+            return Err(anyhow!("Binance Futures error: {}", err));
+        }
+        Ok(OrderResult {
+            order_id: json["orderId"].as_u64().unwrap_or(0),
+            symbol: json["symbol"].as_str().unwrap_or(symbol).to_string(),
+            side: json["side"].as_str().unwrap_or(side).to_string(),
+            price: json["avgPrice"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            quantity: json["origQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(quantity),
+            executed_qty: json["executedQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            status: json["status"].as_str().unwrap_or("UNKNOWN").to_string(),
+            commission: 0.0,
+        })
+    }
+
+    async fn place_limit_order(
+        &self,
+        symbol: &str,
+        side: &str,
+        quantity: f64,
+        price: f64,
+        client_order_id: Option<String>,
+    ) -> Result<OrderResult> {
+        let ts = self.now_ms();
+        let qty_str = format!("{}", quantity);
+        let price_str = format!("{}", price);
+        let mut query = format!(
+            "symbol={}&side={}&type=LIMIT&timeInForce=GTX&quantity={}&price={}&timestamp={}",
+            symbol, side, qty_str, price_str, ts
+        );
+        if let Some(id) = client_order_id {
+            query.push_str(&format!("&newClientOrderId={}", id));
+        }
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.post(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+        if let Some(err) = json.get("msg") {
+            return Err(anyhow!("Binance Futures error: {}", err));
+        }
+        Ok(OrderResult {
+            order_id: json["orderId"].as_u64().unwrap_or(0),
+            symbol: symbol.to_string(),
+            side: side.to_string(),
+            price,
+            quantity,
+            executed_qty: 0.0,
+            status: json["status"].as_str().unwrap_or("NEW").to_string(),
+            commission: 0.0,
+        })
+    }
+
+    // ============================================================
+    // 🔧 ЭТАП B v3: защитные ордера (STOP_MARKET / TAKE_PROFIT_MARKET).
+    // Тестнет принимает их только через Algo Order API.
+    // История ошибок API — три круга валидации, каждый называл следующий
+    // обязательный параметр (в НИЖНЕМ регистре!):
+    //   круг 1: нужен  'type'          → добавили type=
+    //   круг 2: нужен  'algotype'      → добавили algotype=CONDITIONAL
+    //   круг 3: нужен  'triggerprice'  → ЗАМЕНЯЕМ stopPrice= на triggerprice=
+    // Классический /fapi/v1/order остаётся fallback'ом (он понимает stopPrice).
+    // ============================================================
+        // ============================================================
+    // 🔧 ЭТАП B v4: защитные ордера с ЦЕПОЧКОЙ ТОЧНОСТЕЙ.
+    // История валидации Algo API: круг 1 'type', круг 2 'algotype',
+    // круг 3 'triggerprice', круг 4 = -1111 Precision (цена не в tickSize).
+    // Решение: пробуем цену с 8 → 7 → 6 знаками; -1111 = понизить
+    // разрядность. Успешная попытка логирует найденную точность —
+    // это и есть фактический tickSize Algo-эндпоинта.
+    // Классический /fapi/v1/order остаётся финальным fallback'ом.
+    // ============================================================
+    async fn place_protective_order(
+        &self,
+        symbol: &str,
+        side: &str,
+        stop: bool,
+        trigger_price: f64,
+        client_order_id: Option<String>,
+    ) -> Result<OrderResult> {
+        let ord_type = if stop { "STOP_MARKET" } else { "TAKE_PROFIT_MARKET" };
+
+        // ---------- Цепочка точностей на Algo Order API ----------
+        for &dec in &[8usize, 7, 6] {
+            let tp_str = format!("{:.*}", dec, trigger_price);
+            let ts = self.now_ms();
+            let mut q = format!(
+                "symbol={}&side={}&type={}&algotype=CONDITIONAL&triggerprice={}&closePosition=true&timestamp={}",
+                symbol, side, ord_type, tp_str, ts
+            );
+            if let Some(id) = &client_order_id {
+                q.push_str(&format!("&newClientOrderId={}", id));
+            }
+            let sig = self.sign(&q);
+            let url = format!("{}/fapi/v1/algoOrder?{}&signature={}", self.base_url, q, sig);
+            let resp = self.client.post(&url)
+                .header("X-MBX-APIKEY", &self.api_key)
+                .send().await?;
+            let json: Value = resp.json().await?;
+
+            // Успех = в ответе нет "code" (ошибка приходит как {"code":..,"msg":..})
+            if json["code"].as_i64().is_none() {
+                let oid = json["algoId"].as_u64()
+                    .or_else(|| json["orderId"].as_u64())
+                    .unwrap_or(0);
+                tracing::info!(
+                    "[{}] 🛡 защитный {} поставлен через Algo API (id={}, trigger={}, точность={} зн.)",
+                    symbol, ord_type, oid, tp_str, dec
+                );
+                return Ok(OrderResult {
+                    order_id: oid,
+                    symbol: symbol.to_string(),
+                    side: side.to_string(),
+                    price: trigger_price,
+                    quantity: 0.0,
+                    executed_qty: 0.0,
+                    status: json["algoStatus"].as_str()
+                        .or_else(|| json["status"].as_str())
+                        .unwrap_or("NEW").to_string(),
+                    commission: 0.0,
+                });
+            }
+
+            let code = json["code"].as_i64().unwrap_or(0);
+            let msg = json["msg"].as_str().unwrap_or("?").to_string();
+            tracing::warn!(
+                "[{}] Algo API (точность {} зн., цена '{}') отказал (code={}): {}",
+                symbol, dec, tp_str, code, msg
+            );
+
+            // -1111 = проблема точности → пробуем следующую разрядность.
+            // Любая другая ошибка → точность не поможет, выходим в fallback.
+            if code != -1111 {
+                break;
+            }
+        }
+
+        // ---------- Попытка 2: классический /fapi/v1/order (fallback) ----------
+        let ts2 = self.now_ms();
+        let tp_str2 = format!("{:.8}", trigger_price);
+        // AUDIT-P8: workingType=MARK_PRICE — дефолт классики CONTRACT_PRICE,
+        // триггер по last price: спайк last price на тестнете срывает стоп
+        // без реального движения mark price. Mark price устойчив к всплескам.
+        // В Algo-путь выше параметр НЕ добавлен сознательно: эндпоинт
+        // нестандартный, главный путь SL не ломаем до подтверждения того,
+        // что лишний параметр там безопасен.
+        let mut q2 = format!(
+            "symbol={}&side={}&type={}&stopPrice={}&closePosition=true&workingType=MARK_PRICE&timestamp={}",
+            symbol, side, ord_type, tp_str2, ts2
+        );
+        if let Some(id) = client_order_id {
+            q2.push_str(&format!("&newClientOrderId={}", id));
+        }
+        let sig2 = self.sign(&q2);
+        let url2 = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, q2, sig2);
+        let resp2 = self.client.post(&url2)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json2: Value = resp2.json().await?;
+        if let Some(err) = json2.get("msg") {
+            return Err(anyhow!("Binance Futures защитный ордер: {}", err));
+        }
+        Ok(OrderResult {
+            order_id: json2["orderId"].as_u64().unwrap_or(0),
+            symbol: symbol.to_string(),
+            side: side.to_string(),
+            price: trigger_price,
+            quantity: 0.0,
+            executed_qty: 0.0,
+            status: json2["status"].as_str().unwrap_or("NEW").to_string(),
+            commission: 0.0,
+        })
+    }
+
+    async fn cancel_order(&self, symbol: &str, order_id: u64) -> Result<bool> {
+        let ts = self.now_ms();
+        let query = format!("symbol={}&orderId={}&timestamp={}", symbol, order_id, ts);
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.delete(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+
+        if status.is_success() {
+            return Ok(true);
+        }
+        // AUDIT-P1: -2011 = «не знаю такой ордер» — для algoId это НОРМА:
+        // классический /fapi/v1/order не видит Algo-ордера. Фолбэк:
+        // DELETE /fapi/v1/algoOrder?algoId=... (тот же стиль, что постановка).
+        if json["code"].as_i64() == Some(-2011) {
+            let ts2 = self.now_ms();
+            let q2 = format!("symbol={}&algoId={}&timestamp={}", symbol, order_id, ts2);
+            let sig2 = self.sign(&q2);
+            let url2 = format!("{}/fapi/v1/algoOrder?{}&signature={}", self.base_url, q2, sig2);
+            let resp2 = self.client.delete(&url2)
+                .header("X-MBX-APIKEY", &self.api_key)
+                .send().await?;
+            let st2 = resp2.status();
+            let json2: Value = resp2.json().await.unwrap_or(Value::Null);
+            if st2.is_success() && json2["code"].as_i64().is_none() {
+                tracing::info!("[{}] cancel #{}: отмена выполнена через Algo API (algoId)", symbol, order_id);
+                return Ok(true);
+            }
+            tracing::warn!("[{}] cancel #{}: нет ни в классике (-2011), ни в Algo API (http={}, code={}: {}) — если это живой SL/TP, СВЕРИТЬ openOrders (риск дубля)", symbol, order_id, st2.as_u16(), json2["code"].as_i64().unwrap_or(0), json2["msg"].as_str().unwrap_or("?"));
+            return Ok(false);
+        }
+        Err(anyhow!("cancel {} #{}: {}", symbol, order_id, json["msg"].as_str().unwrap_or("?")))
+    }
+
+    async fn get_order_status(&self, symbol: &str, order_id: u64) -> Result<OrderResult> {
+        let ts = self.now_ms();
+        let query = format!("symbol={}&orderId={}&timestamp={}", symbol, order_id, ts);
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.get(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+
+        // AUDIT-P1: классика не знает algoId (ответ = {"code":-2011,...}).
+        // Фолбэк: GET /fapi/v1/algoOrder?algoId=...; если эндпоинт/поля иные —
+        // прозрачно уходим в прежнее поведение (UNKNOWN) с явным warn.
+        if json["code"].as_i64().is_some() {
+            let ts2 = self.now_ms();
+            let q2 = format!("symbol={}&algoId={}&timestamp={}", symbol, order_id, ts2);
+            let sig2 = self.sign(&q2);
+            let url2 = format!("{}/fapi/v1/algoOrder?{}&signature={}", self.base_url, q2, sig2);
+            let resp2 = self.client.get(&url2)
+                .header("X-MBX-APIKEY", &self.api_key)
+                .send().await?;
+            let json2: Value = resp2.json().await.unwrap_or(Value::Null);
+            let st2 = json2["algoStatus"].as_str().or_else(|| json2["status"].as_str());
+            if json2["code"].as_i64().is_none() {
+                if let Some(s2) = st2 {
+                    tracing::info!("[{}] get_order_status #{}: статус получен через Algo API: {}", symbol, order_id, s2);
+                    return Ok(OrderResult {
+                        order_id,
+                        symbol: symbol.to_string(),
+                        side: json2["side"].as_str().unwrap_or("").to_string(),
+                        price: json2["triggerprice"].as_str().and_then(|p| p.parse().ok())
+                            .or_else(|| json2["triggerPrice"].as_str().and_then(|p| p.parse().ok()))
+                            .unwrap_or(0.0),
+                        quantity: 0.0,
+                        executed_qty: 0.0,
+                        status: s2.to_string(),
+                        commission: 0.0,
+                    });
+                }
+                tracing::warn!("[{}] get_order_status #{}: классика: code={}: {}; Algo API без распознанного статуса — вернуть UNKNOWN", symbol, order_id, json["code"].as_i64().unwrap_or(0), json["msg"].as_str().unwrap_or("?"));
+            }
+        }
+
+        Ok(OrderResult {
+            order_id,
+            symbol: symbol.to_string(),
+            side: json["side"].as_str().unwrap_or("").to_string(),
+            price: {
+                let avg: f64 = json["avgPrice"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let lim: f64 = json["price"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                if avg > 0.0 { avg } else { lim }
+            },
+            quantity: json["origQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            executed_qty: json["executedQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            status: json["status"].as_str().unwrap_or("UNKNOWN").to_string(),
+            commission: 0.0,
+        })
+    }
+
+    // ============================================================
+    // 🔧 Поиск ордера по origClientOrderId — используется движком
+    // после упавшего POST (resolve_by_client_id).
+    // ============================================================
+    async fn get_order_by_client_id(
+        &self,
+        symbol: &str,
+        orig_client_order_id: &str,
+    ) -> Result<OrderResult> {
+        let ts = self.now_ms();
+        let query = format!(
+            "symbol={}&origClientOrderId={}&timestamp={}",
+            symbol, orig_client_order_id, ts
+        );
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.get(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+
+        if json["code"].as_i64().is_some() && json["status"].is_null() {
+            return Err(anyhow!(
+                "-{} query by client {}: {}",
+                json["code"].as_i64().unwrap_or(0),
+                orig_client_order_id,
+                json["msg"].as_str().unwrap_or("?")
+            ));
+        }
+
+        Ok(OrderResult {
+            order_id: json["orderId"].as_u64().unwrap_or(0),
+            symbol: json["symbol"].as_str().unwrap_or(symbol).to_string(),
+            side: json["side"].as_str().unwrap_or("").to_string(),
+            price: {
+                let avg: f64 = json["avgPrice"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let lim: f64 = json["price"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                if avg > 0.0 { avg } else { lim }
+            },
+            quantity: json["origQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            executed_qty: json["executedQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            status: json["status"].as_str().unwrap_or("UNKNOWN").to_string(),
+            commission: 0.0,
+        })
+    }
+
+    // ============================================================
+    // 🔧 Живые ордера символа (sweep при shutdown, ручные сверки)
+    // ============================================================
+    async fn get_open_orders(&self, symbol: &str) -> Result<Vec<OrderResult>> {
+        let ts = self.now_ms();
+        let query = format!("symbol={}&timestamp={}", symbol, ts);
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/openOrders?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.get(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+
+        if json["code"].as_i64().is_some() && json.as_array().is_none() {
+            return Err(anyhow!(
+                "openOrders {}: {}",
+                symbol,
+                json["msg"].as_str().unwrap_or("?")
+            ));
+        }
+
+        let mut out = Vec::new();
+        if let Some(arr) = json.as_array() {
+            for o in arr {
+                let avg: f64 = o["avgPrice"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let lim: f64 = o["price"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                out.push(OrderResult {
+                    order_id: o["orderId"].as_u64().unwrap_or(0),
+                    symbol: o["symbol"].as_str().unwrap_or(symbol).to_string(),
+                    side: o["side"].as_str().unwrap_or("").to_string(),
+                    price: if avg > 0.0 { avg } else { lim },
+                    quantity: o["origQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    executed_qty: o["executedQty"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    status: o["status"].as_str().unwrap_or("UNKNOWN").to_string(),
+                    commission: 0.0,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn get_balance(&self, asset: &str) -> Result<f64> {
+        let ts = self.now_ms();
+        let query = format!("timestamp={}", ts);
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v2/balance?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.get(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+
+        if let Some(balances) = json.as_array() {
+            for b in balances {
+                if b["asset"].as_str() == Some(asset) {
+                    return Ok(b["availableBalance"]
+                        .as_str()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0));
+                }
+            }
+        }
+        Ok(0.0)
+    }
+
+    async fn get_order_book(
+        &self,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>)> {
+        let url = format!(
+            "{}/fapi/v1/depth?symbol={}&limit={}",
+            self.base_url, symbol, limit
+        );
+        let json: Value = self.client.get(&url).send().await?.json().await?;
+
+        let bids = json["bids"].as_array().map(|arr| {
+            arr.iter().filter_map(|v| {
+                let p = v[0].as_str()?.parse::<f64>().ok()?;
+                let q = v[1].as_str()?.parse::<f64>().ok()?;
+                Some((p, q))
+            }).collect()
+        }).unwrap_or_default();
+
+        let asks = json["asks"].as_array().map(|arr| {
+            arr.iter().filter_map(|v| {
+                let p = v[0].as_str()?.parse::<f64>().ok()?;
+                let q = v[1].as_str()?.parse::<f64>().ok()?;
+                Some((p, q))
+            }).collect()
+        }).unwrap_or_default();
+
+        Ok((bids, asks))
+    }
+
+    async fn get_positions(&self) -> Result<Vec<ExchangePosition>> {
+        let ts = self.now_ms();
+        let query = format!("timestamp={}", ts);
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v2/positionRisk?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.get(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+
+        let mut out = Vec::new();
+        if let Some(arr) = json.as_array() {
+            for p in arr {
+                let symbol = p["symbol"].as_str().unwrap_or("").to_string();
+                let qty: f64 = p["positionAmt"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let entry: f64 = p["entryPrice"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                if qty.abs() > 0.0 {
+                    out.push(ExchangePosition { symbol, qty, entry_price: entry });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn get_order_commission(&self, symbol: &str, order_id: u64) -> Result<f64> {
+        let ts = self.now_ms();
+        let query = format!(
+            "symbol={}&incomeType=COMMISSION&orderId={}&limit=50&timestamp={}",
+            symbol, order_id, ts
+        );
+        let sig = self.sign(&query);
+        let url = format!("{}/fapi/v1/income?{}&signature={}", self.base_url, query, sig);
+
+        let resp = self.client.get(&url)
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send().await?;
+        let json: Value = resp.json().await?;
+        if !json.is_array() {
+            return Ok(0.0);
+        }
+        let mut total = 0.0;
+        if let Some(arr) = json.as_array() {
+            for row in arr {
+                if let Some(inc) = row["income"].as_str().and_then(|s| s.parse::<f64>().ok()) {
+                    total += inc.abs();
+                }
+            }
+        }
+        Ok(total)
+    }
+}

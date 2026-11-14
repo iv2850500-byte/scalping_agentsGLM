@@ -1,0 +1,31 @@
+# Секреты — НИКОГДА не коммитить
+.env
+.env.*
+*.env
+config.local.toml
+default.toml
+default.*.toml
+
+# Бэкапы БД с историей сделок (могут содержать ключи из логов)
+data_backup_*/
+data/*.db*
+
+# Целевой билд
+target/
+desktop.ini
+target/
+target_p16/
+backups/
+backup_p15/
+_archive/
+archive/
+logs/
+*.log
+*.bak*
+*.zip
+config*.toml
+
+# --- [E8] large market data files: keep on disk, never commit ---
+data/bookticker_live/*.csv
+data/pepe_trades/*aggTrades*.csv
+data/eth-1d.csv

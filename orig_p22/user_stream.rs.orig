@@ -1,0 +1,210 @@
+//! ✅ Фаза 3в (К-5): user-data stream — события исполнения ордеров в реальном времени.
+//! Binance USDT-M futures: listenKey + keepalive + ORDER_TRADE_UPDATE.
+//! Спот пока работает в poll-режиме (движок сам переключается на поллинг).
+//! ✅ ДОРОГА А: поле n (commission) теперь доезжает до движка — точные
+//! комиссии биржи по каждому филлу, накопление в wait_fill.
+
+use crate::exchange::traits::OrderResult;
+use anyhow::{anyhow, Result};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
+use std::time::Duration;
+use tokio::sync::broadcast;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+/// Событие исполнения из ORDER_TRADE_UPDATE.
+#[derive(Debug, Clone)]
+pub struct OrderEvent {
+    pub symbol: String,
+    pub side: String,
+    pub client_order_id: String,
+    pub order_id: u64,
+    /// NEW / PARTIALLY_FILLED / FILLED / CANCELED / EXPIRED
+    pub status: String,
+    pub orig_qty: f64,
+    pub cum_filled_qty: f64,
+    pub last_filled_qty: f64,
+    pub last_filled_price: f64,
+    pub avg_price: f64,
+    /// Комиссия ПОСЛЕДНЕГО филла (USDT, со знаком платежа — отрицательная).
+    /// Для однофиллового ордера = итоговая; для мультифиллового движок
+    /// накапливает сумму по всем событиям ордера.
+    pub commission: f64,
+}
+
+impl OrderEvent {
+    pub fn to_order_result(&self) -> OrderResult {
+        OrderResult {
+            order_id: self.order_id,
+            symbol: self.symbol.clone(),
+            side: self.side.clone(),
+            price: if self.avg_price > 0.0 { self.avg_price } else { self.last_filled_price },
+            quantity: self.orig_qty,
+            executed_qty: self.cum_filled_qty,
+            status: self.status.clone(),
+            // ✅ ДОРОГА А: комиссия последнего филла как базовое значение.
+            // Для мультифилловых wait_fill движка ЗАМЕНЯЕТ это накопленной
+            // суммой всех событий ордера (точное итоговое значение).
+            commission: self.commission.abs(),
+        }
+    }
+}
+
+/// Обёртка приёмника для передачи в ExecutionEngine.
+pub type OrderEventsRx = tokio::sync::Mutex<broadcast::Receiver<OrderEvent>>;
+
+pub struct UserStream {
+    events_tx: broadcast::Sender<OrderEvent>,
+}
+
+impl UserStream {
+    /// Создать listenKey, поднять keepalive и WS с реконнектами.
+    pub async fn start(
+        children: &mut tokio::task::JoinSet<()>,
+        api_key: &str,
+        rest_base: &str,
+        ws_base: &str,
+    ) -> Result<Self> {
+        let ws_base = ws_base.trim_end_matches('/').to_string();
+        let rest = rest_base.trim_end_matches('/').to_string();
+        let (events_tx, _) = broadcast::channel::<OrderEvent>(512);
+
+        // 1) listenKey
+        let key = fetch_listen_key(api_key, &rest).await?;
+        tracing::info!("🔑 user-data stream: listenKey получен");
+
+        // 2) keepalive каждые 30 минут (ключ живёт 60)
+        {
+            let api = api_key.to_string();
+            let base = rest.clone();
+            children.spawn(async move {
+                let mut iv = tokio::time::interval(Duration::from_secs(1800));
+                iv.tick().await;
+                loop {
+                    iv.tick().await;
+                    if let Err(e) = keepalive(&api, &base).await {
+                        tracing::warn!("user-stream keepalive: {}", e);
+                    }
+                }
+            });
+        }
+
+        // 3) WS с реконнектом и обновлением ключа
+        {
+            let tx = events_tx.clone();
+            let api = api_key.to_string();
+            let base = rest;
+            children.spawn(async move {
+                let mut key = key;
+                let mut backoff = 1u64;
+                loop {
+                    let url = format!("{}/ws/{}", ws_base, key);
+                    tracing::info!("🔑 user-stream: подключаюсь");
+                    match connect_and_read(&url, &tx).await {
+                        Ok(()) => {
+                            backoff = 1; // штатное закрытие (24ч-лимит Binance) — реконнект
+                        }
+                        Err(e) => {
+                            tracing::error!("user-stream WS: {} | реконнект через {} с", e, backoff);
+                            tokio::time::sleep(Duration::from_secs(backoff)).await;
+                            backoff = (backoff * 2).min(30);
+                        }
+                    }
+                    // ключ мог протухнуть — обновляем перед переподключением
+                    match fetch_listen_key(&api, &base).await {
+                        Ok(k) => key = k,
+                        Err(e) => tracing::error!("user-stream listenKey refresh: {}", e),
+                    }
+                }
+            });
+        }
+
+        Ok(Self { events_tx })
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<OrderEvent> {
+        self.events_tx.subscribe()
+    }
+}
+
+async fn fetch_listen_key(api_key: &str, rest: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .post(format!("{}/fapi/v1/listenKey", rest))
+        .header("X-MBX-APIKEY", api_key)
+        .send()
+        .await?;
+    let json: Value = resp.json().await?;
+    json["listenKey"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("нет listenKey в ответе: {}", json))
+}
+
+async fn keepalive(api_key: &str, rest: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .put(format!("{}/fapi/v1/listenKey", rest))
+        .header("X-MBX-APIKEY", api_key)
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(anyhow!("keepalive: HTTP {}", resp.status()))
+    }
+}
+
+async fn connect_and_read(url: &str, tx: &broadcast::Sender<OrderEvent>) -> Result<()> {
+    let (ws, _) = connect_async(url).await?;
+    let (write, mut read) = ws.split();
+    let write = std::sync::Arc::new(tokio::sync::Mutex::new(write));
+
+    while let Some(msg) = read.next().await {
+        let msg = msg?;
+        match msg {
+            Message::Ping(payload) => {
+                let mut w = write.lock().await;
+                if w.send(Message::Pong(payload)).await.is_err() {
+                    break;
+                }
+            }
+            Message::Text(text) => {
+                let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+                match v["e"].as_str().unwrap_or("") {
+                    "ORDER_TRADE_UPDATE" => {
+                        let o = &v["o"];
+                        let ev = OrderEvent {
+                            symbol: o["s"].as_str().unwrap_or("").to_string(),
+                            side: o["S"].as_str().unwrap_or("").to_string(),
+                            client_order_id: o["c"].as_str().unwrap_or("").to_string(),
+                            order_id: o["i"].as_u64().unwrap_or(0),
+                            status: o["X"].as_str().unwrap_or("").to_string(),
+                            orig_qty: o["q"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                            cum_filled_qty: o["z"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                            last_filled_qty: o["l"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                            last_filled_price: o["L"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                            avg_price: o["ap"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                            // ✅ ДОРОГА А: n — комиссия текущего филла, приходит
+                            // ОТРИЦАТЕЛЬНОЙ (списание). Берём abs — движок суммирует.
+                            commission: o["n"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0_f64).abs(),
+                        };
+                        let _ = tx.send(ev);
+                    }
+                    "listenKeyExpired" => {
+                        tracing::warn!("user-stream: listenKeyExpired — переподключение");
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+            Message::Close(_) => return Ok(()),
+            _ => {}
+        }
+    }
+    Ok(())
+}

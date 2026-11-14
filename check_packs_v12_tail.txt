@@ -1,0 +1,24 @@
+
+# ============================================================
+# P64 block (appended by P64 pack) - WFA conveyor (17 momentum
+# filters, feature-gated) + supervisor-restarts + E5b typed errors.
+# Markers: 'P64/' in src\**\*.rs + Cargo.toml.
+# Expected after install: 51.
+# ============================================================
+$p64Count = 0
+if (Test-Path "src") {
+    Get-ChildItem -Path "src" -Recurse -Filter "*.rs" | ForEach-Object {
+        $p64Count += ([regex]::Matches((Get-Content $_.FullName -Raw), [regex]::Escape("P64/"))).Count
+    }
+}
+if (Test-Path "Cargo.toml") {
+    $p64Count += ([regex]::Matches((Get-Content "Cargo.toml" -Raw), [regex]::Escape("P64/"))).Count
+}
+Write-Host ("[P64] markers: {0} (installed if 51)" -f $p64Count)
+if ($p64Count -ge 51) {
+    Write-Host "[P64] OK: installed"
+    Write-Host "[P64]   supervisor : powershell -ExecutionPolicy Bypass -File .\supervisor.ps1"
+    Write-Host "[P64]   WFA        : powershell -ExecutionPolicy Bypass -File .\wfa_pipeline.ps1"
+} else {
+    Write-Host "[P64] MISSING/INCOMPLETE (run install_p64.ps1)"
+}

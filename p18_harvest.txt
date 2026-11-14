@@ -1,0 +1,324 @@
+##### p18_harvest :: 2026-10-30 09:00:42 :: cwd=C:\Users\BASE_PC\scalping_agentsGLM
+##### FATAL: src\binance_futures.rs not found - run this script from the repo root
+
+##### ===== symbol_filters.rs =====
+##### src\symbol_filters.rs NOT FOUND - candidates:
+  candidate: C:\Users\BASE_PC\scalping_agentsGLM\src\exchange\symbol_filters.rs
+
+##### P18-consts :: tree src  pattern=/1e-8|0\.00000001/
+##### total: 7 match(es) in 4 file(s)
+  src\bin\backtest.rs :: 1
+  src\strategies\bounce_trader.rs :: 2
+  src\strategies\gold_session_trader.rs :: 2
+  src\strategies\liquidity_grab.rs :: 2
+  ---- src\bin\backtest.rs
+  213: 
+  214:     let tick_size = if symbol.contains("PEPE") || symbol.contains("DOGS") {
+  215:         0.00000001
+  216:     } else if symbol.contains("DOGE") {
+  217:         0.00001
+  ---- src\strategies\bounce_trader.rs
+    7: use ta::Next;
+    8: 
+    9: const TICK_SIZE: f64 = 0.00000001;
+   10: const QTY_STEP: f64 = 0.00000001;
+   11: const FRACTAL_LOOKBACK: usize = 5;
+   12: const MAX_FRACTALS: usize = 20;
+  ---- src\strategies\gold_session_trader.rs
+   29: use std::collections::VecDeque;
+   30: 
+   31: const TICK_SIZE: f64 = 0.00000001;
+   32: const QTY_STEP: f64 = 0.00000001;
+   33: 
+   34: /// Часы UTC для торговли (London session key times)
+  ---- src\strategies\liquidity_grab.rs
+   32: 
+   33: /// Universal tick size — works for all coins (BTC, SOL, PEPE).
+   34: const TICK_SIZE: f64 = 0.00000001;
+   35: const QTY_STEP: f64 = 0.00000001;
+   36: 
+   37: /// Fractal lookback — свечи слева/справа должны быть ниже/выше
+
+##### P18-registry-usage :: tree src  pattern=/symbol_filters|FilterRegistry/
+##### total: 13 match(es) in 4 file(s)
+  src\exchange\mod.rs :: 2
+  src\exchange\symbol_filters.rs :: 2
+  src\execution\execution_engine.rs :: 3
+  src\main.rs :: 6
+  ---- src\exchange\mod.rs
+    4: pub mod bybit_futures;       // 🆕 Phase B
+    5: pub mod funding;
+    6: pub mod symbol_filters;
+    7: pub mod time_sync;
+    8: pub mod traits;
+   18: 
+   19: pub use funding::FundingTracker;
+   20: pub use symbol_filters::FilterRegistry;
+   21: pub use time_sync::TimeSync;
+   22: pub use traits::ExchangeClient;
+  ---- src\exchange\symbol_filters.rs
+   41: 
+   42: #[derive(Debug, Default)]
+   43: pub struct FilterRegistry {
+   44:     filters: HashMap<String, SymbolFilters>,
+   45: }
+   46: 
+   47: impl FilterRegistry {
+   48:     /// Один запрос exchangeInfo при старте на рынок (spot/futures).
+   49:         /// ✅ Лёгкая загрузка: один запрос на символ (?symbol=..., килобайты вместо мегабайт)
+  ---- src\execution\execution_engine.rs
+    4: use crate::state::StateManager;
+    5: use crate::strategies::Signal;
+    6: use crate::exchange::symbol_filters::FilterRegistry;
+    7: use crate::exchange::traits::OrderResult;
+    8: use crate::exchange::user_stream::OrderEventsRx;
+   25:     rest_client: Option<Arc<dyn ExchangeClient>>,
+   26:     simulate: bool,
+   27:     filters: Option<Arc<FilterRegistry>>,
+   28:     order_events: Option<OrderEventsRx>,
+   29:     last_close_attempt_ms: std::sync::Mutex<std::collections::HashMap<String, i64>>,
+   44:         state_manager: Arc<StateManager>,
+   45:         global_risk: Arc<GlobalRiskManager>,
+   46:         filters: Option<Arc<FilterRegistry>>,
+   47:         order_events: Option<OrderEventsRx>,
+   48:     ) -> Self {
+  ---- src\main.rs
+   55:     symbols: &[String],
+   56:     max_attempts: u32,
+   57: ) -> Result<Arc<exchange::FilterRegistry>> {
+   58:     let mut last_err = None;
+   59:     for attempt in 1..=max_attempts {
+   60:         match exchange::FilterRegistry::load(url, is_futures, symbols).await {
+   61:             Ok(r) => return Ok(Arc::new(r)),
+   62:             Err(e) => {
+  172:             .map(|b| b.rest_url_override.clone().unwrap_or_default())
+  173:             .unwrap_or_else(|| global.rest_url.clone());
+  174:         Some(Arc::new(exchange::FilterRegistry::load_okx(&okx_rest, &okx_fut_symbols).await?))
+  175:     };
+  176:     let bybit_fut_filters = if bybit_fut_symbols.is_empty() { None } else {
+  177:         Some(Arc::new(exchange::FilterRegistry::load_bybit("https://api.bybit.com", &bybit_fut_symbols).await?))
+  178:     };
+  179: 
+  430:     time_sync: exchange::SharedTimeSync,
+  431:     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+  432:     filters: Option<Arc<exchange::FilterRegistry>>,
+  433:     hub: Arc<websocket::WebSocketHub>,
+  434:     global_risk: Arc<risk::GlobalRiskManager>,
+  ... (capped)
+
+##### P18-exit-params :: tree src  pattern=/reduceOnly|workingType|closePosition/
+##### total: 8 match(es) in 5 file(s)
+  src\exchange\binance_futures.rs :: 3
+  src\exchange\binance_rest.rs :: 1
+  src\exchange\okx_futures.rs :: 2
+  src\exchange\traits.rs :: 1
+  src\main.rs :: 1
+  ---- src\exchange\binance_futures.rs
+  175:             let ts = self.now_ms();
+  176:             let mut q = format!(
+  177:                 "symbol={}&side={}&type={}&algotype=CONDITIONAL&triggerprice={}&closePosition=true&timestamp={}",
+  178:                 symbol, side, ord_type, tp_str, ts
+  179:             );
+  228:         let ts2 = self.now_ms();
+  229:         let tp_str2 = format!("{:.8}", trigger_price);
+  230:         // AUDIT-P8: workingType=MARK_PRICE — дефолт классики CONTRACT_PRICE,
+  231:         // триггер по last price: спайк last price на тестнете срывает стоп
+  232:         // без реального движения mark price. Mark price устойчив к всплескам.
+  235:         // что лишний параметр там безопасен.
+  236:         let mut q2 = format!(
+  237:             "symbol={}&side={}&type={}&stopPrice={}&closePosition=true&workingType=MARK_PRICE&timestamp={}",
+  238:             symbol, side, ord_type, tp_str2, ts2
+  239:         );
+  ---- src\exchange\binance_rest.rs
+  338:     }
+  339:     // ============================================================
+  340:     // 🔧 ЭТАП B: защитные ордера (STOP_MARKET closePosition) —
+  341:     // это фьючерсная механика. Спот-клиент их не поддерживает:
+  342:     // осознанный fail-safe Err (спот-боты у нас не используются,
+  ---- src\exchange\okx_futures.rs
+  366:                 "instId": inst_id, "tdMode": "cross",
+  367:                 "side": side.to_lowercase(), "ordType": "conditional",
+  368:                 "closeFraction": "1", "reduceOnly": true,
+  369:                 "slTriggerPx": trig, "slOrdPx": "-1",
+  370:             })
+  373:                 "instId": inst_id, "tdMode": "cross",
+  374:                 "side": side.to_lowercase(), "ordType": "conditional",
+  375:                 "closeFraction": "1", "reduceOnly": true,
+  376:                 "tpTriggerPx": trig, "tpOrdPx": "-1",
+  377:             })
+  ---- src\exchange\traits.rs
+   24:     /// stop=true  → STOP_MARKET (стоп-лосс)
+   25:     /// stop=false → TAKE_PROFIT_MARKET (тейк-профит)
+   26:     /// closePosition=true → закрывает ВСЮ позицию при триггере,
+   27:     /// quantity НЕ указывается (биржа отвергает связку).
+   28:     /// client_order_id: префикс "pr_" помечает ордер как защитный —
+  ---- src\main.rs
+  849:                 // Читаем СВЕЖИЙ список: фантомы этого тика не получат стоп,
+  850:                 // свежие сироты получат сразу. NB: возможен дубль со старым
+  851:                 // стопом прежней сессии (оба closePosition=true — безвредно),
+  852:                 // чистка зомби-ордеров — территория P8.
+  853:                 for pos in sm.get_positions().into_iter().filter(|p| p.sl_order_id.is_none()) {
+
+##### P18-filters :: tree src  pattern=/tick_?size|TICK_SIZE|PRICE_FILTER|step_?size|LOT_SIZE/
+##### total: 76 match(es) in 10 file(s)
+  src\bin\backtest.rs :: 18
+  src\exchange\binance_futures.rs :: 2
+  src\exchange\symbol_filters.rs :: 20
+  src\strategies\bounce_trader.rs :: 7
+  src\strategies\gold_session_trader.rs :: 4
+  src\strategies\keltner_dca.rs :: 5
+  src\strategies\liquidity_grab.rs :: 4
+  src\strategies\momentum.rs :: 4
+  src\strategies\momentum_v3.rs :: 4
+  src\utils\math.rs :: 8
+  ---- src\bin\backtest.rs
+  212:     }
+  213: 
+  214:     let tick_size = if symbol.contains("PEPE") || symbol.contains("DOGS") {
+  215:         0.00000001
+  216:     } else if symbol.contains("DOGE") {
+  219:         0.00001
+  220:     };
+  221:     println!("   Tick size: {}", tick_size);
+  222: 
+  223:     let ob_analyzer = OrderBookAnalyzer::new(
+  255: 
+  256:                 let (trades, msgs, sigs, f_ts, l_ts) = run_book_only(
+  257:                     book_file, &symbol, maker_fee, taker_fee, tick_size,
+  258:                     max_duration_ms, order_timeout_ms, &mut strategy, &day_key,
+  259:                 )?;
+  289: 
+  290:                 let (trades, msgs, sigs, f_ts, l_ts) = run_merged(
+  291:                     trades_file, book_file, &symbol, maker_fee, taker_fee, tick_size,
+  292:                     max_duration_ms, order_timeout_ms, &mut strategy, &day_key,
+  293:                 )?;
+  315: 
+  316:                 let (trades, msgs, sigs, f_ts, l_ts) = run_single(
+  317:                     file, &symbol, maker_fee, taker_fee, tick_size, max_duration_ms,
+  318:                     &mut strategy, &slippage, &day_key, data_type,
+  319:                 )?;
+  395:     maker_fee: f64,
+  396:     taker_fee: f64,
+  397:     tick_size: f64,
+  398:     max_duration_ms: i64,
+  399:     strategy: &mut Box<dyn Strategy>,
+  435: 
+  436:         if let Some(pos) = &position {
+  437:             if let Some(reason) = check_exit(pos, price_now, ts_now, max_duration_ms, tick_size) {
+  438:                 let exit = calc_exit_price(pos, price_now, reason, tick_size);
+  439:                 let trade = close_position(pos, exit, reason, ts_now, maker_fee, taker_fee, day_key);
+  440:                 // ✅ ИСПРАВЛЕНО: вызываем notify_position_closed
+  495:     maker_fee: f64,
+  496:     taker_fee: f64,
+  497:     tick_size: f64,
+  498:     max_duration_ms: i64,
+  499:     order_timeout_ms: i64,
+  595:         // 3. Exit check
+  596:         if let (Some(pos), WebSocketMessage::Trade(t)) = (&position, &msg) {
+  597:             if let Some(reason) = check_exit(pos, t.price, t.timestamp, max_duration_ms, tick_size) {
+  598:                 let exit = calc_exit_price(pos, t.price, reason, tick_size);
+  599:                 let trade = close_position(pos, exit, reason, t.timestamp, maker_fee, taker_fee, day_key);
+  600:                 // ✅ ИСПРАВЛЕНО: вызываем notify_position_closed
+  653:     maker_fee: f64,
+  654:     taker_fee: f64,
+  655:     tick_size: f64,
+  656:     max_duration_ms: i64,
+  657:     _order_timeout_ms: i64,
+  691:         // 1. Exit check (по mid price)
+  692:         if let Some(pos) = &position {
+  693:             if let Some(reason) = check_exit(pos, price_now, bt.timestamp, max_duration_ms, tick_size) {
+  694:                 let exit = calc_exit_price(pos, price_now, reason, tick_size);
+  695:                 let trade = close_position(pos, exit, reason, bt.timestamp, maker_fee, taker_fee, day_key);
+  696:                 strategy.notify_position_closed(trade.pnl_net);
+  817: 
+  818: // ============================================================
+  819: // Exit logic — ✅ ИСПРАВЛЕНО: добавлен tick_size для слиппеджа
+  820: // ============================================================
+  821: fn check_exit(
+  ... (capped)
+
+##### P18-fallback8-tree :: tree src  pattern=/\{:\.8/
+##### total: 20 match(es) in 6 file(s)
+  src\bin\resample_klines.rs :: 1
+  src\exchange\binance_futures.rs :: 1
+  src\exchange\okx_futures.rs :: 1
+  src\execution\execution_engine.rs :: 11
+  src\main.rs :: 4
+  src\state\state_manager.rs :: 2
+  ---- src\bin\resample_klines.rs
+  103:     let mut f = BufWriter::new(File::create(&out_path)?);
+  104:     writeln!(f, "{}", header)?;
+  105:     for (bucket_start, g) in &sorted {
+  106:         let close_time = bucket_start + target_secs * 1000 - 1;
+  107:         writeln!(f, "{},{},{:.8},{:.8},{},{:.8},{},{:.8},{},{:.8},{:.8},0",
+  108:                  bucket_start, g.0, g.1, g.2, g.3, g.4, close_time, g.5, g.8, 0.0, 0.0)?;
+  109:     }
+  110: 
+  111:     println!();
+  ---- src\exchange\binance_futures.rs
+  225:         }
+  226: 
+  227:         // ---------- Попытка 2: классический /fapi/v1/order (fallback) ----------
+  228:         let ts2 = self.now_ms();
+  229:         let tp_str2 = format!("{:.8}", trigger_price);
+  230:         // AUDIT-P8: workingType=MARK_PRICE — дефолт классики CONTRACT_PRICE,
+  231:         // триггер по last price: спайк last price на тестнете срывает стоп
+  232:         // без реального движения mark price. Mark price устойчив к всплескам.
+  233:         // В Algo-путь выше параметр НЕ добавлен сознательно: эндпоинт
+  ---- src\exchange\okx_futures.rs
+  194: 
+  195:     fn px_str(p: f64, tick: f64) -> String {
+  196:         let t = if tick > 0.0 { tick } else { 0.1 };
+  197:         let v = (p / t).round() * t;
+  198:         let s = format!("{:.8}", v);
+  199:         s.trim_end_matches('0').trim_end_matches('.').to_string()
+  200:     }
+  201: 
+  202:     fn check_scode(result: &Value) -> Result<()> {
+  ---- src\execution\execution_engine.rs
+  665:                         self.state_manager
+  666:                             .set_sl_order_id(&signal.symbol, o.order_id.to_string())
+  667:                             .await;
+  668:                         tracing::info!(
+  669:                             "[{}] 🛡 биржевой STOP_MARKET #{} @ {:.8} поставлен",
+  670:                             self.config.name, o.order_id, sl
+  671:                         );
+  672:                         placed = true;
+  673:                         break;
+  717:                         self.state_manager
+  718:                             .set_tp_order_id(&signal.symbol, o.order_id.to_string())
+  719:                             .await;
+  720:                         tracing::info!(
+  721:                             "[{}] 🛡 биржевой TAKE_PROFIT_MARKET #{} @ {:.8} поставлен",
+  722:                             self.config.name, o.order_id, tp
+  723:                         );
+  724:                         placed = true;
+  725:                         break;
+  786:         if let Some(f) = self.filters.as_ref().and_then(|r| r.get(&signal.symbol).ok()) {
+  787:             let min_n = f.min_notional.to_f64().unwrap_or(0.0);
+  788:             if qty * signal.price < min_n {
+  789:                 tracing::warn!(
+  790:                     "[{}] 🧹 ПЫЛЬ: {} × {:.8} = ${:.4} < minNotional {} — погашена в state без ордера",
+  791:                     self.config.name, qty, signal.price, qty * signal.price, min_n
+  792:                 );
+  793:                 let pnl = self
+  794:                     .state_manager
+  812:                 .apply_filters(&signal.symbol, signal.price, signal.quantity)
+  813:                 .map(|(p, _)| p)
+  814:             {
+  815:                 tracing::info!(
+  816:                     "[{}] maker-выход: limit {} {:.5} @ {:.8}",
+  817:                     self.config.name, signal.side, qty, price
+  818:                 );
+  819:                 let status_res = self
+  820:                     .place_and_wait(
+ 1038:                             self.state_manager
+ 1039:                                 .set_sl_order_id(&signal.symbol, o.order_id.to_string())
+ 1040:                                 .await;
+ 1041:                             tracing::info!(
+ 1042:                                 "[{}] 🎗 биржевой стоп подтянут: #{} → {:.8}",
+ 1043:                                 self.config.name, o.order_id, new_sl
+ 1044:                             );
+ 1045:                         }
+ 1046:                         Err(e) => {
+  ... (capped)

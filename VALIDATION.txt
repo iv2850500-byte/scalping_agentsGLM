@@ -1,0 +1,438 @@
+ВАЛИДАЦИЯ СВЕЖИХ ДАННЫХ P30b (2026-11-05, собрано ассистентом)
+
+Источник: data.binance.vision (futures/um, monthly+daily), хвост 2026-11-05 00:00-09:00 UTC для ETH/SOL добран через fapi.
+
+Известный дефект данных Binance: сутки 2026-10-28 отсутствуют у всех трёх символов (24 бара, 0.22%, в допуске).
+
+
+## Файлы
+- BTCUSDT-1h-full.csv: 10766 строк данных; заголовок: close_time,open,high,low,close,volume,taker_buy_volume; первый close_time 1754996399999, последний 1793836799999; sha256=6d9edc4fce3bcab16ccbe8919e787e594e0e84b4d385e38e241728714348eaef
+- ETHUSDT-1h-full.csv: 10776 строк данных; заголовок: close_time,open,high,low,close,volume,taker_buy_volume; первый close_time 1754996399999, последний 1793872799999; sha256=9fab0fac7b4822245ca4600fa2fb4798981239d140ed73132a371896319af957
+- SOLUSDT-1h-full.csv: 10776 строк данных; заголовок: close_time,open,high,low,close,volume,taker_buy_volume; первый close_time 1754996399999, последний 1793872799999; sha256=b0b416676d22dd7a6fea2e2c0008a9aa2a19c0d1aed0f9fbc0168980c4617a9d
+- BTCUSDT-1h-720d.csv: 17246 строк данных; заголовок: close_time,open,high,low,close,volume,taker_buy_volume; первый close_time 1731668399999, последний 1793836799999; sha256=7014071a1faffa53a5ced440747b510f09475a3216ec67720671e0cd6c0493ec
+
+## Перекрёстная сверка свежего BTC с ранее скачанным CSV (fapi)
+старый файл: /home/z/my-project/download/klines/BTCUSDT-1h.csv
+общих баров по close_time: 3000
+расхождений close: 1
+баров из старого файла, которых нет в свежем: 0
+диапазон пересечения: 1781953199999 .. 1792749599999
+детали: единственное расхождение — бар 2026-10-23 09:00-10:00 UTC, close 81607.40 (старый срез) против 81629.10 (свежий архив), дельта 0.027%; open/high/low совпадают точно. Это штатная ревизия цены Binance после публикации: месячные архивы содержат финальное значение, свежий файл авторитетнее.
+
+## Полные отчёты сборщиков
+### BTC
+==============================================================================
+BUILD REPORT: BTCUSDT 1h USDT-M futures candles (data-btc)
+==============================================================================
+generated_at_utc : 2026-11-05 10:29:51 
+now_ms           : 1793874566710 (2026-11-05 10:29:26 UTC)
+symbol/interval  : BTCUSDT 1h (futures USDT-M)
+
+SOURCES
+------------------------------------------------------------------------------
+1) data.binance.vision (primary): monthly_ok=24, monthly_404=0, monthly_other_fail=0
+   daily_ok=4, daily_404=1, daily_other_fail=0 (incl. gap-fill days tried=1)
+2) fapi.binance.com REST tail: status=418, rows=0 (blocked: HTTP 418; skipped (allowed, tail stays at daily archives))
+dedup conflicts (same open_time, different values): 0
+rows dropped: bad close_time=0, unclosed=0, gap-fill rows added=0
+
+--- FILE: full (~450d) ---
+path            : /home/z/my-project/work/fresh_data/BTCUSDT-1h-full.csv
+window start    : open_time >= 1754992800000 (2025-08-12 10:00:00 UTC)
+data rows       : 10766
+expected approx : 10800 (+/- 60) -> OK
+first row       : 1754996399999,118360.00,118615.30,118154.30,118407.10,4387.115,1958.900
+  first open    : 2025-08-12 10:00:00 UTC | close: 2025-08-12 10:59:59 UTC
+last row        : 1793836799999,80682.00,80699.80,80350.00,80466.50,4233.726,1697.084
+  last open     : 2026-11-04 23:00:00 UTC | close: 2026-11-04 23:59:59 UTC
+close_time check: 0 violation(s) of close_time == open_time + 3599999
+monotonic/step  : gaps=24 (0.2229% of rows), duplicate-steps=0, duplicate close_time=0
+  gap list (missing bars, UTC):
+    2026-10-28 00:59:59
+    2026-10-28 01:59:59
+    2026-10-28 02:59:59
+    2026-10-28 03:59:59
+    2026-10-28 04:59:59
+    2026-10-28 05:59:59
+    2026-10-28 06:59:59
+    2026-10-28 07:59:59
+    2026-10-28 08:59:59
+    2026-10-28 09:59:59
+    2026-10-28 10:59:59
+    2026-10-28 11:59:59
+    2026-10-28 12:59:59
+    2026-10-28 13:59:59
+    2026-10-28 14:59:59
+    2026-10-28 15:59:59
+    2026-10-28 16:59:59
+    2026-10-28 17:59:59
+    2026-10-28 18:59:59
+    2026-10-28 19:59:59
+    2026-10-28 20:59:59
+    2026-10-28 21:59:59
+    2026-10-28 22:59:59
+    2026-10-28 23:59:59
+gap threshold   : OK (<= 0.5%)
+OHLC sanity     : 0 violation(s)
+last close      : 80466.50 (BTCUSDT price at data end, 2026-11-04 23:59:59 UTC)
+file size       : 741265 bytes
+sha256          : 6d9edc4fce3bcab16ccbe8919e787e594e0e84b4d385e38e241728714348eaef
+encoding/lines  : UTF-8=ok, CR present=NO
+
+--- FILE: 720d ---
+path            : /home/z/my-project/work/fresh_data/BTCUSDT-1h-720d.csv
+window start    : open_time >= 1731664800000 (2024-11-15 10:00:00 UTC)
+data rows       : 17246
+expected approx : 17280 (+/- 60) -> OK
+first row       : 1731668399999,89250.00,89525.40,89000.00,89405.60,8186.093,3954.874
+  first open    : 2024-11-15 10:00:00 UTC | close: 2024-11-15 10:59:59 UTC
+last row        : 1793836799999,80682.00,80699.80,80350.00,80466.50,4233.726,1697.084
+  last open     : 2026-11-04 23:00:00 UTC | close: 2026-11-04 23:59:59 UTC
+close_time check: 0 violation(s) of close_time == open_time + 3599999
+monotonic/step  : gaps=24 (0.1392% of rows), duplicate-steps=0, duplicate close_time=0
+  gap list (missing bars, UTC):
+    2026-10-28 00:59:59
+    2026-10-28 01:59:59
+    2026-10-28 02:59:59
+    2026-10-28 03:59:59
+    2026-10-28 04:59:59
+    2026-10-28 05:59:59
+    2026-10-28 06:59:59
+    2026-10-28 07:59:59
+    2026-10-28 08:59:59
+    2026-10-28 09:59:59
+    2026-10-28 10:59:59
+    2026-10-28 11:59:59
+    2026-10-28 12:59:59
+    2026-10-28 13:59:59
+    2026-10-28 14:59:59
+    2026-10-28 15:59:59
+    2026-10-28 16:59:59
+    2026-10-28 17:59:59
+    2026-10-28 18:59:59
+    2026-10-28 19:59:59
+    2026-10-28 20:59:59
+    2026-10-28 21:59:59
+    2026-10-28 22:59:59
+    2026-10-28 23:59:59
+gap threshold   : OK (<= 0.5%)
+OHLC sanity     : 0 violation(s)
+last close      : 80466.50 (BTCUSDT price at data end, 2026-11-04 23:59:59 UTC)
+file size       : 1194953 bytes
+sha256          : 7014071a1faffa53a5ced440747b510f09475a3216ec67720671e0cd6c0493ec
+encoding/lines  : UTF-8=ok, CR present=NO
+
+HTTP REQUEST LOG (url -> status)
+------------------------------------------------------------------------------
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2024-11.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2024-12.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-01.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-02.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-03.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-04.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-05.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-06.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-07.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-08.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-09.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-10.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-11.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-12.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-01.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-02.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-03.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-04.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-05.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-06.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-07.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-08.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-09.zip  ok
+ 200 https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2026-10.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2026-11-01.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2026-11-02.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2026-11-03.zip  ok
+ 200 https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2026-11-04.zip  ok
+ 418 https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=1000&startTime=1793836800000  final (no retry)
+ 404 https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2026-10-28.zip  final (no retry)
+
+RUNTIME LOG
+------------------------------------------------------------------------------
+[2026-11-05 10:29:26.709Z] now_ms=1793874566709
+[2026-11-05 10:29:26.710Z] window 'full (~450d)': 450d -> start 1754992800000 (2025-08-12 10:00:00 UTC)
+[2026-11-05 10:29:26.710Z] window '720d': 720d -> start 1731664800000 (2024-11-15 10:00:00 UTC)
+[2026-11-05 10:29:26.710Z] last closed bar must satisfy close_time < now_ms=1793874566710 (2026-11-05 10:29:26 UTC)
+[2026-11-05 10:29:26.710Z] months to fetch (monthly archives): (2024, 11)..(2026, 10) (24 months)
+[2026-11-05 10:29:26.710Z] GET monthly 2024-11 ...
+[2026-11-05 10:29:27.705Z]   +720 rows from month-2024-11 (total unique 720)
+[2026-11-05 10:29:27.705Z] GET monthly 2024-12 ...
+[2026-11-05 10:29:28.506Z]   +744 rows from month-2024-12 (total unique 1464)
+[2026-11-05 10:29:28.506Z] GET monthly 2025-01 ...
+[2026-11-05 10:29:29.334Z]   +744 rows from month-2025-01 (total unique 2208)
+[2026-11-05 10:29:29.334Z] GET monthly 2025-02 ...
+[2026-11-05 10:29:30.275Z]   +672 rows from month-2025-02 (total unique 2880)
+[2026-11-05 10:29:30.275Z] GET monthly 2025-03 ...
+[2026-11-05 10:29:31.367Z]   +744 rows from month-2025-03 (total unique 3624)
+[2026-11-05 10:29:31.367Z] GET monthly 2025-04 ...
+[2026-11-05 10:29:32.516Z]   +720 rows from month-2025-04 (total unique 4344)
+[2026-11-05 10:29:32.516Z] GET monthly 2025-05 ...
+[2026-11-05 10:29:33.426Z]   +744 rows from month-2025-05 (total unique 5088)
+[2026-11-05 10:29:33.426Z] GET monthly 2025-06 ...
+[2026-11-05 10:29:34.526Z]   +720 rows from month-2025-06 (total unique 5808)
+[2026-11-05 10:29:34.526Z] GET monthly 2025-07 ...
+[2026-11-05 10:29:35.187Z]   +744 rows from month-2025-07 (total unique 6552)
+[2026-11-05 10:29:35.188Z] GET monthly 2025-08 ...
+[2026-11-05 10:29:36.244Z]   +744 rows from month-2025-08 (total unique 7296)
+[2026-11-05 10:29:36.244Z] GET monthly 2025-09 ...
+[2026-11-05 10:29:36.891Z]   +720 rows from month-2025-09 (total unique 8016)
+[2026-11-05 10:29:36.891Z] GET monthly 2025-10 ...
+[2026-11-05 10:29:37.643Z]   +744 rows from month-2025-10 (total unique 8760)
+[2026-11-05 10:29:37.643Z] GET monthly 2025-11 ...
+[2026-11-05 10:29:38.398Z]   +720 rows from month-2025-11 (total unique 9480)
+[2026-11-05 10:29:38.398Z] GET monthly 2025-12 ...
+[2026-11-05 10:29:39.268Z]   +744 rows from month-2025-12 (total unique 10224)
+[2026-11-05 10:29:39.268Z] GET monthly 2026-01 ...
+[2026-11-05 10:29:40.142Z]   +744 rows from month-2026-01 (total unique 10968)
+[2026-11-05 10:29:40.142Z] GET monthly 2026-02 ...
+[2026-11-05 10:29:41.185Z]   +672 rows from month-2026-02 (total unique 11640)
+[2026-11-05 10:29:41.185Z] GET monthly 2026-03 ...
+[2026-11-05 10:29:41.878Z]   +744 rows from month-2026-03 (total unique 12384)
+[2026-11-05 10:29:41.879Z] GET monthly 2026-04 ...
+[2026-11-05 10:29:43.015Z]   +720 rows from month-2026-04 (total unique 13104)
+[2026-11-05 10:29:43.015Z] GET monthly 2026-05 ...
+[2026-11-05 10:29:43.602Z]   +744 rows from month-2026-05 (total unique 13848)
+[2026-11-05 10:29:43.602Z] GET monthly 2026-06 ...
+[2026-11-05 10:29:44.347Z]   +720 rows from month-2026-06 (total unique 14568)
+[2026-11-05 10:29:44.347Z] GET monthly 2026-07 ...
+[2026-11-05 10:29:45.024Z]   +744 rows from month-2026-07 (total unique 15312)
+[2026-11-05 10:29:45.024Z] GET monthly 2026-08 ...
+[2026-11-05 10:29:46.023Z]   +744 rows from month-2026-08 (total unique 16056)
+[2026-11-05 10:29:46.023Z] GET monthly 2026-09 ...
+[2026-11-05 10:29:46.755Z]   +720 rows from month-2026-09 (total unique 16776)
+[2026-11-05 10:29:46.755Z] GET monthly 2026-10 ...
+[2026-11-05 10:29:47.454Z]   +720 rows from month-2026-10 (total unique 17496)
+[2026-11-05 10:29:47.454Z] partial month 2026-11: daily archives for days 01..04
+[2026-11-05 10:29:50.901Z]   +96 rows from dailies-2026-11 (total unique 17592)
+[2026-11-05 10:29:50.902Z] GET REST tail from 2026-11-05 00:00:00 UTC ...
+[2026-11-05 10:29:50.976Z]   REST blocked (418) -> skipping tail
+[2026-11-05 10:29:50.978Z] gap-fill: 24 missing bar(s) across 1 day(s): ['2026-10-28']
+[2026-11-05 10:29:51.063Z]   gap-fill daily 2026-10-28 -> 404
+[2026-11-05 10:29:51.066Z] dropped 0 unclosed bar(s); final unique closed bars: 17592
+
+### ETH/SOL
+DATA-ETHSOL build report
+generated : 2026-11-05 10:31:43 UTC
+now_ms    : 1793874660491 (2026-11-05 10:31:00 UTC)
+start_ms  : 1754992800000 (2025-08-12 10:00:00 UTC = now-450d, hour-aligned)
+task      : 1h USDT-M futures klines, last ~450 days, expect ~10800 rows/file (10800±60)
+
+==============================================================================
+FILE: /home/z/my-project/work/fresh_data/ETHUSDT-1h-full.csv
+==============================================================================
+rows (data, no header) : 10776   expected 10800 ± 60 -> [10740, 10860]   -> OK
+bytes                  : 720771
+header line correct    : True (must be 'close_time,open,high,low,close,volume,taker_buy_volume')
+LF-only newlines       : True (no CR found: True)
+first row              : 1754996399999,4286.84,4298.00,4272.79,4276.36,162718.758,77370.036
+  -> UTC               : 2025-08-12 10:59:59 UTC
+last row               : 1793872799999,2420.27,2420.77,2411.71,2419.99,80011.804,45644.525
+  -> UTC               : 2026-11-05 09:59:59 UTC
+last close price       : 2419.99 (ETHUSDT at end of data)
+monotonic close_time   : True
+step ms (min/max)      : 3600000 / 90000000 (must be 3600000)
+duplicate close_time   : 0
+gap rows (missing hrs) : 24  (0.2227% of rows)  -> OK (<=0.5%)
+gap UTC timestamps     : ['2026-10-28 00:59', '2026-10-28 01:59', '2026-10-28 02:59', '2026-10-28 03:59', '2026-10-28 04:59', '2026-10-28 05:59', '2026-10-28 06:59', '2026-10-28 07:59', '2026-10-28 08:59', '2026-10-28 09:59', '2026-10-28 10:59', '2026-10-28 11:59', '2026-10-28 12:59', '2026-10-28 13:59', '2026-10-28 14:59', '2026-10-28 15:59', '2026-10-28 16:59', '2026-10-28 17:59', '2026-10-28 18:59', '2026-10-28 19:59', '2026-10-28 20:59', '2026-10-28 21:59', '2026-10-28 22:59', '2026-10-28 23:59']
+gap-fill days tried    : ['2026-10-28']
+OHLC violations        : 0
+close_time fixed rows  : 0 (forced to open_time+3599999)
+dup rows skipped       : 0
+dropped: old=274, unclosed=0
+SHA256                 : 9fab0fac7b4822245ca4600fa2fb4798981239d140ed73132a371896319af957
+
+SOURCES used for ETHUSDT:
+  data.binance.vision monthly OK : 15 -> ['2025-08', '2025-09', '2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10']
+  data.binance.vision monthly 404: none
+  data.binance.vision daily OK   : 4
+  data.binance.vision daily 404  : 0
+  fapi REST tail                 : HTTP 200, rows added: 10
+DOWNLOAD LOG (ETHUSDT, sequential, code + URL):
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-08.zip  [40225 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-09.zip  [38299 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-10.zip  [39876 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-11.zip  [38603 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-12.zip  [39357 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-01.zip  [39239 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-02.zip  [36046 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-03.zip  [39550 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-04.zip  [37859 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-05.zip  [38839 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-06.zip  [38024 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-07.zip  [38922 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-08.zip  [38672 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-09.zip  [37812 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-10.zip  [37679 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-01.zip  [1528 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-02.zip  [1590 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-03.zip  [1574 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-04.zip  [1603 bytes]
+  200  https://fapi.binance.com/fapi/v1/klines?symbol=ETHUSDT&interval=1h&limit=1000&startTime=1793836800000  [REST tail from 2026-11-05 00:00:00+00:00]
+  404  https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-10-28.zip
+
+==============================================================================
+FILE: /home/z/my-project/work/fresh_data/SOLUSDT-1h-full.csv
+==============================================================================
+rows (data, no header) : 10776   expected 10800 ± 60 -> [10740, 10860]   -> OK
+bytes                  : 737755
+header line correct    : True (must be 'close_time,open,high,low,close,volume,taker_buy_volume')
+LF-only newlines       : True (no CR found: True)
+first row              : 1754996399999,174.4400,175.0100,173.7500,174.6900,630283.74,297570.74
+  -> UTC               : 2025-08-12 10:59:59 UTC
+last row               : 1793872799999,96.7800,96.8700,96.3800,96.8300,367081.72,188212.98
+  -> UTC               : 2026-11-05 09:59:59 UTC
+last close price       : 96.8300 (SOLUSDT at end of data)
+monotonic close_time   : True
+step ms (min/max)      : 3600000 / 90000000 (must be 3600000)
+duplicate close_time   : 0
+gap rows (missing hrs) : 24  (0.2227% of rows)  -> OK (<=0.5%)
+gap UTC timestamps     : ['2026-10-28 00:59', '2026-10-28 01:59', '2026-10-28 02:59', '2026-10-28 03:59', '2026-10-28 04:59', '2026-10-28 05:59', '2026-10-28 06:59', '2026-10-28 07:59', '2026-10-28 08:59', '2026-10-28 09:59', '2026-10-28 10:59', '2026-10-28 11:59', '2026-10-28 12:59', '2026-10-28 13:59', '2026-10-28 14:59', '2026-10-28 15:59', '2026-10-28 16:59', '2026-10-28 17:59', '2026-10-28 18:59', '2026-10-28 19:59', '2026-10-28 20:59', '2026-10-28 21:59', '2026-10-28 22:59', '2026-10-28 23:59']
+gap-fill days tried    : ['2026-10-28']
+OHLC violations        : 0
+close_time fixed rows  : 0 (forced to open_time+3599999)
+dup rows skipped       : 0
+dropped: old=274, unclosed=0
+SHA256                 : b0b416676d22dd7a6fea2e2c0008a9aa2a19c0d1aed0f9fbc0168980c4617a9d
+
+SOURCES used for SOLUSDT:
+  data.binance.vision monthly OK : 15 -> ['2025-08', '2025-09', '2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10']
+  data.binance.vision monthly 404: none
+  data.binance.vision daily OK   : 4
+  data.binance.vision daily 404  : 0
+  fapi REST tail                 : HTTP 200, rows added: 10
+DOWNLOAD LOG (SOLUSDT, sequential, code + URL):
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-08.zip  [38009 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-09.zip  [36707 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-10.zip  [37859 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-11.zip  [36358 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-12.zip  [36683 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-01.zip  [36611 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-02.zip  [33200 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-03.zip  [36150 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-04.zip  [34581 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-05.zip  [35689 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-06.zip  [35026 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-07.zip  [35322 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-08.zip  [35792 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-09.zip  [35226 bytes]
+  200  https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-10.zip  [34896 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-01.zip  [1433 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-02.zip  [1470 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-03.zip  [1445 bytes]
+  200  https://data.binance.vision/data/futures/um/daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-04.zip  [1492 bytes]
+  200  https://fapi.binance.com/fapi/v1/klines?symbol=SOLUSDT&interval=1h&limit=1000&startTime=1793836800000  [REST tail from 2026-11-05 00:00:00+00:00]
+  404  https://data.binance.vision/data/futures/um/daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-10-28.zip
+
+==============================================================================
+ANOMALIES / NOTES
+==============================================================================
+- ETHUSDT: 24 missing hour(s) at ['2026-10-28'] (0.2227% <= 0.5% tolerance); daily gap-fill archives returned HTTP 404 (day absent from Binance Vision, absent in monthly archive as well)
+- SOLUSDT: 24 missing hour(s) at ['2026-10-28'] (0.2227% <= 0.5% tolerance); daily gap-fill archives returned HTTP 404 (day absent from Binance Vision, absent in monthly archive as well)
+
+==============================================================================
+RUN LOG
+==============================================================================
+[2026-11-05 10:31:00] DATA-ETHSOL build started
+[2026-11-05 10:31:00] now_ms=1793874660491 (2026-11-05 10:31:00 UTC)
+[2026-11-05 10:31:00] start_ms=1754992800000 (2025-08-12 10:00:00 UTC, now-450d hour-aligned)
+[2026-11-05 10:31:00] symbols (sequential): ETHUSDT, SOLUSDT
+[2026-11-05 10:31:00] === ETHUSDT ===
+[2026-11-05 10:31:01]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-08.zip
+[2026-11-05 10:31:01]     monthly 2025-08: +744 rows
+[2026-11-05 10:31:01]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-09.zip
+[2026-11-05 10:31:01]     monthly 2025-09: +720 rows
+[2026-11-05 10:31:02]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-10.zip
+[2026-11-05 10:31:02]     monthly 2025-10: +744 rows
+[2026-11-05 10:31:03]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-11.zip
+[2026-11-05 10:31:03]     monthly 2025-11: +720 rows
+[2026-11-05 10:31:04]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-12.zip
+[2026-11-05 10:31:04]     monthly 2025-12: +744 rows
+[2026-11-05 10:31:05]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-01.zip
+[2026-11-05 10:31:05]     monthly 2026-01: +744 rows
+[2026-11-05 10:31:05]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-02.zip
+[2026-11-05 10:31:05]     monthly 2026-02: +672 rows
+[2026-11-05 10:31:06]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-03.zip
+[2026-11-05 10:31:06]     monthly 2026-03: +744 rows
+[2026-11-05 10:31:07]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-04.zip
+[2026-11-05 10:31:07]     monthly 2026-04: +720 rows
+[2026-11-05 10:31:08]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-05.zip
+[2026-11-05 10:31:08]     monthly 2026-05: +744 rows
+[2026-11-05 10:31:09]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-06.zip
+[2026-11-05 10:31:09]     monthly 2026-06: +720 rows
+[2026-11-05 10:31:10]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-07.zip
+[2026-11-05 10:31:10]     monthly 2026-07: +744 rows
+[2026-11-05 10:31:11]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-08.zip
+[2026-11-05 10:31:11]     monthly 2026-08: +744 rows
+[2026-11-05 10:31:12]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-09.zip
+[2026-11-05 10:31:12]     monthly 2026-09: +720 rows
+[2026-11-05 10:31:13]   GET 200 monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2026-10.zip
+[2026-11-05 10:31:13]     monthly 2026-10: +720 rows
+[2026-11-05 10:31:14]   GET 200 daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-01.zip
+[2026-11-05 10:31:14]     daily 2026-11-01: +24 rows
+[2026-11-05 10:31:15]   GET 200 daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-02.zip
+[2026-11-05 10:31:15]     daily 2026-11-02: +24 rows
+[2026-11-05 10:31:16]   GET 200 daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-03.zip
+[2026-11-05 10:31:16]     daily 2026-11-03: +24 rows
+[2026-11-05 10:31:17]   GET 200 daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-11-04.zip
+[2026-11-05 10:31:17]     daily 2026-11-04: +24 rows
+[2026-11-05 10:31:18]     REST tail: +10 closed rows (HTTP 200, startTime=2026-11-05 00:00:00+00:00)
+[2026-11-05 10:31:18]     after range filter: 10776 bars (dropped: old=274, unclosed=0)
+[2026-11-05 10:31:18]     gap round 1: 24 missing hour(s) on ['2026-10-28'] -> trying daily archives
+[2026-11-05 10:31:18]   GET 404 daily/klines/ETHUSDT/1h/ETHUSDT-1h-2026-10-28.zip
+[2026-11-05 10:31:18]     gap round made no progress, stopping
+[2026-11-05 10:31:18]     wrote /home/z/my-project/work/fresh_data/ETHUSDT-1h-full.csv: 10776 data rows
+[2026-11-05 10:31:18] === SOLUSDT ===
+[2026-11-05 10:31:19]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-08.zip
+[2026-11-05 10:31:19]     monthly 2025-08: +744 rows
+[2026-11-05 10:31:20]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-09.zip
+[2026-11-05 10:31:20]     monthly 2025-09: +720 rows
+[2026-11-05 10:31:20]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-10.zip
+[2026-11-05 10:31:20]     monthly 2025-10: +744 rows
+[2026-11-05 10:31:22]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-11.zip
+[2026-11-05 10:31:22]     monthly 2025-11: +720 rows
+[2026-11-05 10:31:22]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2025-12.zip
+[2026-11-05 10:31:22]     monthly 2025-12: +744 rows
+[2026-11-05 10:31:24]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-01.zip
+[2026-11-05 10:31:24]     monthly 2026-01: +744 rows
+[2026-11-05 10:31:24]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-02.zip
+[2026-11-05 10:31:24]     monthly 2026-02: +672 rows
+[2026-11-05 10:31:25]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-03.zip
+[2026-11-05 10:31:25]     monthly 2026-03: +744 rows
+[2026-11-05 10:31:26]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-04.zip
+[2026-11-05 10:31:26]     monthly 2026-04: +720 rows
+[2026-11-05 10:31:27]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-05.zip
+[2026-11-05 10:31:27]     monthly 2026-05: +744 rows
+[2026-11-05 10:31:28]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-06.zip
+[2026-11-05 10:31:28]     monthly 2026-06: +720 rows
+[2026-11-05 10:31:29]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-07.zip
+[2026-11-05 10:31:29]     monthly 2026-07: +744 rows
+[2026-11-05 10:31:30]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-08.zip
+[2026-11-05 10:31:30]     monthly 2026-08: +744 rows
+[2026-11-05 10:31:31]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-09.zip
+[2026-11-05 10:31:31]     monthly 2026-09: +720 rows
+[2026-11-05 10:31:32]   GET 200 monthly/klines/SOLUSDT/1h/SOLUSDT-1h-2026-10.zip
+[2026-11-05 10:31:32]     monthly 2026-10: +720 rows
+[2026-11-05 10:31:33]   GET 200 daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-01.zip
+[2026-11-05 10:31:33]     daily 2026-11-01: +24 rows
+[2026-11-05 10:31:33]   GET 200 daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-02.zip
+[2026-11-05 10:31:33]     daily 2026-11-02: +24 rows
+[2026-11-05 10:31:34]   GET 200 daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-03.zip
+[2026-11-05 10:31:34]     daily 2026-11-03: +24 rows
+[2026-11-05 10:31:34]   GET 200 daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-11-04.zip
+[2026-11-05 10:31:34]     daily 2026-11-04: +24 rows
+[2026-11-05 10:31:35]     attempt 1/3 failed: HTTP 418 https://fapi.binance.com/fapi/v1/klines?symbol=SOLUSDT&interval=1h&limit=1000&startTime=1793836800000
+[2026-11-05 10:31:37]     attempt 2/3 failed: HTTP 418 https://fapi.binance.com/fapi/v1/klines?symbol=SOLUSDT&interval=1h&limit=1000&startTime=1793836800000
+[2026-11-05 10:31:42]     REST tail: +10 closed rows (HTTP 200, startTime=2026-11-05 00:00:00+00:00)
+[2026-11-05 10:31:42]     after range filter: 10776 bars (dropped: old=274, unclosed=0)
+[2026-11-05 10:31:42]     gap round 1: 24 missing hour(s) on ['2026-10-28'] -> trying daily archives
+[2026-11-05 10:31:43]   GET 404 daily/klines/SOLUSDT/1h/SOLUSDT-1h-2026-10-28.zip
+[2026-11-05 10:31:43]     gap round made no progress, stopping
+[2026-11-05 10:31:43]     wrote /home/z/my-project/work/fresh_data/SOLUSDT-1h-full.csv: 10776 data rows

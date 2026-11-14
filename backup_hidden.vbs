@@ -1,0 +1,1 @@
+CreateObject("Wscript.Shell").Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""C:\Users\BASE_PC\scalping_agentsGLM\backup.ps1""", 0, False

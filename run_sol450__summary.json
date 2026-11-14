@@ -1,0 +1,43 @@
+{
+ "n": 0,
+ "wr": 0.0,
+ "total_r": 0.0,
+ "pf": 0.0,
+ "maxdd": 0.0,
+ "be_wr": 0.0,
+ "ci_lo": 0.0,
+ "ci_hi": 0.0,
+ "sharpe": 0.0,
+ "trades_per_day": 0.0,
+ "days": 300.0,
+ "cost_r": 0.0,
+ "avg_sl_pct": 0.0,
+ "meta": {
+  "data": "SOLUSDT-1h-full.csv",
+  "bars": 10776,
+  "fee": 0.0005,
+  "spread": 0.0002,
+  "funding": 0.0001,
+  "train": 2160,
+  "test": 720,
+  "step": 720,
+  "warm": 250,
+  "seed": 42,
+  "params": {
+   "lookback": 12,
+   "atr_period": 14,
+   "ofi_window": 3,
+   "min_atr": 0.25,
+   "ofi": 0.1,
+   "vol_anom": 1.0,
+   "tp_atr_mult": 2.5,
+   "min_tp": 0.02,
+   "rr": 1.5,
+   "max_per_day": 5,
+   "regime_win": 30,
+   "regime_vol": 1.5,
+   "regime_trend": 0.25,
+   "min_net_rr": 1.2
+  }
+ }
+}

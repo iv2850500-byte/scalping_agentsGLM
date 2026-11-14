@@ -1,0 +1,93 @@
+[package]
+name = "scalping_agents"
+version = "0.3.0"
+edition = "2024"
+default-run = "scalping_agents"
+
+[dependencies]
+thiserror = "2" # P64/: typed errors (E5b)
+base64 = "0.22"
+tokio = { version = "1.41", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] } # P63/tg: socks = SOCKS5 for Telegram TG_PROXY
+tokio-tungstenite = { version = "0.23", features = ["connect", "rustls-tls-native-roots"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+anyhow = "1.0"
+rust_decimal = { version = "1.36", features = ["serde-with-float"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "5.5"
+parking_lot = "0.12"
+sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio-native-tls", "sqlite"] }
+ta = "0.5"
+dotenvy = "0.15"
+async-trait = "0.1"
+futures-util = "0.3"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+prometheus = "0.13"
+once_cell = "1.19"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+# РІСљвЂ¦ P41/rel: wfa-Р С‘Р Р…РЎРѓРЎвЂљРЎР‚РЎС“Р СР ВµР Р…РЎвЂљРЎвЂ№ Р С‘ ws_probe Р ВР РЋР С™Р вЂєР В®Р В§Р вЂўР СњР В« Р С‘Р В· РЎР‚Р ВµР В»Р С‘Р В·Р Р…Р С•Р в„– РЎРѓР В±Р С•РЎР‚Р С”Р С‘ РІР‚вЂќ
+# `cargo build --release` (Р С‘ `--bin scalping_agents`) Р В±Р С•Р В»РЎРЉРЎв‚¬Р Вµ Р С‘РЎвЂ¦ Р Р…Р Вµ РЎРѓРЎвЂљРЎР‚Р С•Р С‘РЎвЂљ:
+# - Р В°РЎР‚РЎвЂљР ВµРЎвЂћР В°Р С”РЎвЂљРЎвЂ№ РЎР‚Р ВµР В»Р С‘Р В·Р В° Р Р…Р Вµ РЎРѓР С•Р Т‘Р ВµРЎР‚Р В¶Р В°РЎвЂљ Р С‘РЎРѓРЎРѓР В»Р ВµР Т‘Р С•Р Р†Р В°РЎвЂљР ВµР В»РЎРЉРЎРѓР С”Р С‘РЎвЂ¦ Р В±Р С‘Р Р…Р В°РЎР‚Р Р…Р С‘Р С”Р С•Р Р† (Р В°РЎС“Р Т‘Р С‘РЎвЂљ D16-Р В±Р В»Р С•Р С”);
+# - Р С—Р С•Р В»Р Р…РЎвЂ№Р в„– `cargo build --release` Р В±Р С•Р В»РЎРЉРЎв‚¬Р Вµ Р Р…Р Вµ Р С—Р В°Р Т‘Р В°Р ВµРЎвЂљ OOM Р Р…Р В° fat-LTO wfa_momentum;
+# - Р Т‘Р В»РЎРЏ Р С‘РЎРѓРЎРѓР В»Р ВµР Т‘Р С•Р Р†Р В°Р Р…Р С‘Р в„–: cargo build --profile wfa --features wfa --bin wfa_momentum # P44/rel: no-LTO profile (P32); --release = fat LTO = rustc crash
+[features]
+wfa = []
+
+[[bin]]
+name = "wfa_momentum"
+path = "src/bin/wfa_momentum.rs"
+required-features = ["wfa"]
+
+[[bin]]
+name = "wfa_bounce"
+path = "src/bin/wfa_bounce.rs"
+required-features = ["wfa"]
+
+[[bin]]
+name = "ws_probe"
+path = "src/bin/ws_probe.rs"
+required-features = ["wfa"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+
+[[bin]]
+name = "download_bybit_klines"
+path = "src/bin/download_bybit_klines.rs"
+
+[[bin]]
+name = "resample_klines"
+path = "src/bin/resample_klines.rs"
+
+# P32: no-LTO profile for research binaries (wfa_momentum).
+# Fat LTO of [profile.release] crashes rustc.exe on this machine
+# (STATUS_ACCESS_VIOLATION). WFA runtime speed is fine without LTO.
+[profile.wfa]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# P64/: WFA conveyor (feature-gated, not in release)
+[[bin]]
+name = "wfa_pipeline"
+path = "src/bin/wfa_pipeline.rs"
+required-features = ["wfa"]
+
+# P66/: threshold grid (feature-gated, not in release)
+[[bin]]
+name = "threshold_grid"
+path = "src/bin/threshold_grid.rs"
+required-features = ["wfa"]
