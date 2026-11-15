@@ -31,3 +31,4 @@ data/pepe_trades/*aggTrades*.csv
 data/eth-1d.csv
 research/spectrum_lab/target/
 *_tail.txt
+D*.ps1
