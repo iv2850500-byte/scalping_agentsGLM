@@ -76,3 +76,4 @@
 | H12/H13 DCA/Keltner | **НЕ ИСПРАВЛЕНО: A-01** (усреднение в state сломано, состояние лестницы in-memory, рестарт теряет ступени) |
 | S1 DashMap await | ПОДТВЕРЖДЕНО в основном безопасным; исключение A-05 (persist) |
 | C4 сверка algo/обычных ордеров | исправлено: cancel/get_status имеют Algo-фолбэк (-2011) — ПОДТВЕРЖДЕНО; семантика статусов algo (CANCELLED vs CANCELED) НЕПРОВЕРЯЕМО без тестнета |
+- 2026-11-15 10:27 P67 verdict (D8): pack target state == repo state (SHA256 match); wholesale install NOT needed; closed
