@@ -279,11 +279,55 @@ impl ExchangeClient for BinanceFuturesClient {
                 symbol, dec, tp_str, code, msg
             );
 
-            // -1111 = проблема точности → пробуем следующую разрядность.
-            // Любая другая ошибка → точность не поможет, выходим в fallback.
+            // -1111 = проблема точности→пробуем следующую разрядность.
+            // Любая другая ошибка→сначала КАНОНИЧНЫЕ параметры официальной
+            // документации (algoType/triggerPrice, P69/): тестнет исторически
+            // принимал нижний регистр, доки описывают camelCase. Только после
+            // отказа обеих форм уходим в классический /fapi/v1/order.
+            // P69/ begin
             if code != -1111 {
+                let ts_c = self.now_ms();
+                let mut qc = format!(
+                    "symbol={}&side={}&type={}&algoType=CONDITIONAL&triggerPrice={}&closePosition=true&timestamp={}",
+                    symbol, side, ord_type, tp_str, ts_c
+                );
+                if let Some(id) = &client_order_id {
+                    qc.push_str(&format!("&newClientOrderId={}", id));
+                }
+                let url_c = self.signed_url("/fapi/v1/algoOrder", &qc); // ✅ P41/D13+D14
+                let resp_c = self.client.post(&url_c)
+                    .header("X-MBX-APIKEY", &self.api_key)
+                    .send().await.map_err(Self::no_url_err)?;
+                let json_c: Value = resp_c.json().await.map_err(Self::no_url_err)?;
+                if json_c["code"].as_i64().is_none() {
+                    let oid_c = json_c["algoId"].as_u64()
+                        .or_else(|| json_c["orderId"].as_u64())
+                        .unwrap_or(0);
+                    tracing::info!(
+                        "[{}] 🛡 защитный {} поставлен через Algo API camelCase (id={}, trigger={})",
+                        symbol, ord_type, oid_c, tp_str
+                    );
+                    return Ok(OrderResult {
+                        order_id: oid_c,
+                        symbol: symbol.to_string(),
+                        side: side.to_string(),
+                        price: trigger_price,
+                        quantity: 0.0,
+                        executed_qty: 0.0,
+                        status: json_c["algoStatus"].as_str()
+                            .or_else(|| json_c["status"].as_str())
+                            .unwrap_or("NEW").to_string(),
+                        commission: 0.0,
+                    });
+                }
+                tracing::warn!(
+                    "[{}] camelCase Algo тоже отказал (code={}): {} - уходим в классику",
+                    symbol, json_c["code"].as_i64().unwrap_or(0),
+                    json_c["msg"].as_str().unwrap_or("?")
+                );
                 break;
             }
+            // P69/ end
         }
 
         // ---------- Попытка 2: классический /fapi/v1/order (fallback) ----------
