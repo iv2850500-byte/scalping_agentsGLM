@@ -1,9 +1,0 @@
-
-# ===================== appended by P63 (v11 tail) =====================
-try {
-$c63 = (Get-ChildItem .\src -Recurse -Filter *.rs | Select-String -Pattern 'P63/' -AllMatches | ForEach-Object { $_.Matches.Count } | Measure-Object -Sum).Sum
-if ($null -eq $c63) { $c63 = 0 }
-$t63 = 0
-if (Test-Path .\Cargo.toml) { $t63 = ([regex]::Matches([System.IO.File]::ReadAllText((Join-Path (Get-Location) 'Cargo.toml')), 'P63/')).Count }
-('markers P63/: {0,3}   installed if 14 (tg transport hardening: TG_PROXY socks5/http for RF-blocking, TG_ENABLED kill-switch, retry 3s/15s x3, circuit breaker 10-60min with outage digest, auth-dead 401/403/404; reqwest+socks)' -f ($c63 + $t63))
-} catch { ('tail error: {0}' -f $_) }
