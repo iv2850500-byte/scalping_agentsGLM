@@ -1,0 +1,5 @@
+﻿[
+  {"id":"H7_INJ_donch10_maker","class":"breakout","rule":"close>Donchian10 + maker0.02 X2+X3_15","params":{"period":10,"tp_mult":1.5,"entry":"maker0.02","exit":"X2+X3_15","risk":0.5},"data_hash":"FNV1a_XAU390d_PAXG218d+6real152d","seed":70},
+  {"id":"H8_XAU_close_try20_adx12","class":"breakout","rule":"Donchian20 tp1.5 + ADX12 vol1.2 + maker X2+X3_15","params":{"period":20,"tp_mult":1.5,"adx_thr":12,"vol_mult":1.2,"risk":0.5},"seed":71},
+  {"id":"H9_XAU_portfolio_noEMA15_25","class":"portfolio_overlay","rule":"union(noEMA15_1.2,noEMA25_1.2) ADX8","params":{"adx":8},"seed":72}
+]
