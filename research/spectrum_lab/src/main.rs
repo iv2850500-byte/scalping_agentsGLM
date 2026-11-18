@@ -228,9 +228,13 @@ struct Params {
     vol_mult: f64,
 }
 
+// P70: добавили H7-H9 аддитивно, H1/H2 не трогали
 const HYPOTHESES: &[(&str, &str)] = &[
     ("H1_range_fade", "mean_reversion"),
     ("H2_donchian_breakout", "breakout"),
+    ("H7_INJ_donch10_maker", "breakout"),
+    ("H8_XAU_close_try20_adx12", "breakout"),
+    ("H9_XAU_noEMA15_25", "breakout"),
 ];
 
 fn param_grid(h: &str) -> Vec<Params> {
@@ -243,7 +247,19 @@ fn param_grid(h: &str) -> Vec<Params> {
                 }
             }
             v
-        }
+        },
+        "H7_INJ_donch10_maker" => vec![
+            Params { lookback:0, z_entry:0.0, period:10, vol_mult:1.0 },
+            Params { lookback:0, z_entry:0.0, period:10, vol_mult:1.1 },
+        ],
+        "H8_XAU_close_try20_adx12" => vec![
+            Params { lookback:0, z_entry:0.0, period:20, vol_mult:1.2 },
+            Params { lookback:0, z_entry:0.0, period:20, vol_mult:1.1 },
+        ],
+        "H9_XAU_noEMA15_25" => vec![
+            Params { lookback:0, z_entry:0.0, period:15, vol_mult:1.0 },
+            Params { lookback:0, z_entry:0.0, period:25, vol_mult:1.0 },
+        ],
         _ => {
             let mut v = vec![];
             for p in [20usize, 55] {

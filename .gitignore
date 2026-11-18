@@ -32,3 +32,8 @@ data/eth-1d.csv
 research/spectrum_lab/target/
 *_tail.txt
 /D[0-9]*.ps1
+
+code_map_*.txt
+for_ai/
+*.bak*
+
