@@ -37,3 +37,6 @@ code_map_*.txt
 for_ai/
 *.bak*
 
+
+research/spectrum_lab/run_p70*
+
